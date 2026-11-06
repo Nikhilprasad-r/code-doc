@@ -13,7 +13,7 @@ import numpy as np
 
 from app.config import Settings, get_settings
 from app.db import connection
-from app.ingest.chunker import Chunk, chunk_code, chunk_text
+from app.ingest.chunker import Chunk, chunk_code, chunk_line_windows, chunk_text
 from app.ingest.dependencies import Dependency, is_manifest, parse_manifest
 from app.ingest.endpoints import Endpoint, extract_endpoints
 from app.ingest.languages import TREE_SITTER_LANGS
@@ -47,17 +47,21 @@ def sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def analyze_file(path: str, text: str, language: str, max_chars: int) -> FileAnalysis:
+def analyze_file(path: str, text: str, language: str, max_chars: int, chunking: str = "ast") -> FileAnalysis:
+    """Extract everything indexed for one file. `chunking="lines"` swaps syntax-aware chunks for plain
+    fixed-size line windows (the naive baseline in the evaluation); symbols etc. are unaffected."""
     result = FileAnalysis(path, language, text)
     if language in TREE_SITTER_LANGS:
         try:
             tree = parse(language, text.encode("utf-8"))
             result.symbols = extract_symbols(language, tree, text.encode("utf-8"))
-            result.chunks = chunk_code(path, language, text, tree, result.symbols, max_chars)
+            if chunking == "ast":
+                result.chunks = chunk_code(path, language, text, tree, result.symbols, max_chars)
         except Exception:  # a grammar failure on one file must not fail the index
             log.warning("syntax-aware chunking failed for %s; using line chunks", path, exc_info=True)
-            result.chunks = chunk_text(path, language, text, max_chars)
-    else:
+    if chunking == "lines":
+        result.chunks = chunk_line_windows(path, language, text)
+    elif not result.chunks:
         result.chunks = chunk_text(path, language, text, max_chars)
     result.imports = extract_imports(language, text)
     result.endpoints = extract_endpoints(language, text)
@@ -66,8 +70,8 @@ def analyze_file(path: str, text: str, language: str, max_chars: int) -> FileAna
     return result
 
 
-def analyze_tree(root: Path, settings: Settings) -> list[FileAnalysis]:
-    return [analyze_file(path, text, language, settings.chunk_max_chars)
+def analyze_tree(root: Path, settings: Settings, chunking: str = "ast") -> list[FileAnalysis]:
+    return [analyze_file(path, text, language, settings.chunk_max_chars, chunking)
             for path, text, language in walk(root, settings.max_file_bytes)]
 
 
@@ -176,12 +180,15 @@ async def index_repo(repo_id: int, settings: Settings | None = None, embedder: E
     if repo is None:
         raise ValueError(f"repo {repo_id} not found")
 
+    chunking = repo.get("chunking") or "ast"
+    replaced_index = False
     try:
         await _set_status(repo_id, "indexing", progress={"phase": "fetching"}, error=None)
         root, commit_sha = await _resolve_source(repo, settings)
 
-        await _set_status(repo_id, "indexing", progress={"phase": "parsing"}, commit_sha=commit_sha)
-        files = await asyncio.to_thread(analyze_tree, root, settings)
+        await _set_status(repo_id, "indexing", progress={"phase": "parsing"})
+        files = await asyncio.to_thread(analyze_tree, root, settings, chunking)
+        replaced_index = True
         await _write_metadata(repo_id, files)
 
         chunks = [c for f in files for c in f.chunks]
@@ -204,12 +211,18 @@ async def index_repo(repo_id: int, settings: Settings | None = None, embedder: E
             "lines": sum(f.text.count("\n") + 1 for f in files),
             "languages": dict(Counter(f.language for f in files).most_common()),
             "embed_model": embedder.model,
+            "chunking": chunking,
             "embedding_cache_hits": cache_hits,
             "seconds": round(time.monotonic() - started, 1),
         }
-        await _set_status(repo_id, "ready", progress={"phase": "done"}, stats=stats)
+        await _set_status(repo_id, "ready", progress={"phase": "done"}, stats=stats, commit_sha=commit_sha)
         return stats
     except Exception as exc:
         log.exception("indexing repo %s failed", repo_id)
-        await _set_status(repo_id, "failed", error=str(exc)[:2000], progress={"phase": "failed"})
+        if repo["stats"] and not replaced_index:
+            # Failed before touching the stored index (e.g. the clone failed): keep serving the old one.
+            await _set_status(repo_id, "ready", progress={"phase": "done"},
+                              error=f"Re-index failed, still serving the previous index: {exc}"[:2000])
+        else:
+            await _set_status(repo_id, "failed", error=str(exc)[:2000], progress={"phase": "failed"})
         raise

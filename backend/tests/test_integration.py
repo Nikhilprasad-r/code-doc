@@ -58,3 +58,31 @@ async def test_reindex_reuses_cached_embeddings(indexed_repo):
     second = await index_repo(repo_id, embedder=embedder)
     assert second["chunks"] == first["chunks"]
     assert second["embedding_cache_hits"] == second["chunks"]
+
+
+async def test_search_modes_isolate_each_retriever(indexed_repo):
+    repo_id, stats, embedder = indexed_repo
+    common = dict(repo_embed_model=stats["embed_model"], k=5)
+    keyword = await hybrid_search(repo_id, "ItemService archive", embedder, NoopReranker(), mode="keyword", **common)
+    vector = await hybrid_search(repo_id, "ItemService archive", embedder, NoopReranker(), mode="vector", **common)
+    assert keyword and all(h.matched_by == ["keyword"] for h in keyword)
+    assert vector and all(h.matched_by == ["vector"] for h in vector)
+    with pytest.raises(ValueError):
+        await hybrid_search(repo_id, "x", embedder, NoopReranker(), mode="bm42", **common)
+
+
+async def test_failed_reindex_before_writing_keeps_serving_previous_index(indexed_repo):
+    async with connection() as conn:
+        row = await (await conn.execute(
+            "INSERT INTO repos (name, source, status, stats) VALUES (%s, %s, 'queued', %s) RETURNING id",
+            ["gone", "/nonexistent/path", '{"files": 3}'])).fetchone()
+    try:
+        with pytest.raises(Exception):
+            await index_repo(row["id"])
+        async with connection() as conn:
+            repo = await (await conn.execute("SELECT status, error FROM repos WHERE id = %s", [row["id"]])).fetchone()
+        assert repo["status"] == "ready"
+        assert repo["error"].startswith("Re-index failed, still serving the previous index")
+    finally:
+        async with connection() as conn:
+            await conn.execute("DELETE FROM repos WHERE id = %s", [row["id"]])

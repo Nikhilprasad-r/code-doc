@@ -183,6 +183,24 @@ def chunk_code(path: str, language: str, text: str, tree: Tree, symbols: list[Sy
     return _build(path, language, lines, ranges, symbols)
 
 
+def chunk_line_windows(path: str, language: str | None, text: str, window: int = 40,
+                       overlap: int = 10) -> list[Chunk]:
+    """Naive fixed-size chunking: `window` lines with `overlap` lines shared between neighbours.
+    Used only as the evaluation baseline that syntax-aware chunking is compared against."""
+    lines = text.split("\n")
+    chunks: list[Chunk] = []
+    start = 0
+    while start < len(lines):
+        end = min(start + window, len(lines)) - 1
+        content = "\n".join(lines[start:end + 1])
+        if content.strip():
+            chunks.append(Chunk(path, language, start + 1, end + 1, content))
+        if end == len(lines) - 1:
+            break
+        start = end + 1 - overlap
+    return chunks
+
+
 _MD_HEADING = re.compile(r"^#{1,6}\s")
 
 

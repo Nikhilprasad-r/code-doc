@@ -104,6 +104,9 @@ CREATE TABLE IF NOT EXISTS embedding_cache (
     PRIMARY KEY (content_hash, model)
 );
 
+-- 'ast' (syntax-aware) or 'lines' (fixed windows; only used as the naive baseline in evaluation)
+ALTER TABLE repos ADD COLUMN IF NOT EXISTS chunking TEXT NOT NULL DEFAULT 'ast';
+
 CREATE TABLE IF NOT EXISTS conversations (
     id         UUID PRIMARY KEY,
     repo_id    INT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,

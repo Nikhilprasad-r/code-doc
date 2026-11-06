@@ -6,7 +6,7 @@
   {"type": "tool_result", "name", "input", "summary", "sources", "is_error"}
   {"type": "notice", "message": str}                  non-fatal conditions
   {"type": "error", "message": str}                   the turn ended without an answer
-  {"type": "done", "usage": {...}}
+  {"type": "done", "usage": {...}, "stop_reason", "model", "models", "tool_calls"}
 plus one internal {"type": "_messages", "messages": [...]} event with the full history to persist.
 """
 
@@ -28,6 +28,14 @@ STEP_LIMIT_NOTE = ("You have reached the tool-call limit for this question. Answ
                    "gathered so far, with citations, and say what you could not verify.")
 
 
+def make_client(settings: Settings) -> anthropic.AsyncAnthropic:
+    """Use ANTHROPIC_API_KEY from settings (.env) when present, else the SDK's own resolution
+    (environment variable or an `ant auth login` profile)."""
+    if settings.anthropic_api_key:
+        return anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+    return anthropic.AsyncAnthropic()
+
+
 class Model(Protocol):
     def stream(self, messages: list[dict], *, allow_tools: bool) -> AsyncIterator[tuple[str, Any]]: ...
 
@@ -35,25 +43,28 @@ class Model(Protocol):
 class ClaudeModel:
     """Streams one assistant turn. Yields ("text", str), ("tool_start", name), then ("final", message)."""
 
-    def __init__(self, settings: Settings, system: list[dict], client: anthropic.AsyncAnthropic | None = None):
+    def __init__(self, settings: Settings, system: list[dict], client: anthropic.AsyncAnthropic | None = None,
+                 tools: list[dict] | None = TOOLS):
         self.settings = settings
         self.system = system
-        self.client = client or anthropic.AsyncAnthropic()
+        self.tools = tools
+        self.client = client or make_client(settings)
 
-    async def stream(self, messages: list[dict], *, allow_tools: bool) -> AsyncIterator[tuple[str, Any]]:
+    async def stream(self, messages: list[dict], *, allow_tools: bool = True) -> AsyncIterator[tuple[str, Any]]:
         params: dict[str, Any] = {
             "model": self.settings.agent_model,
             "max_tokens": 64000,
             "system": self.system,
-            "tools": TOOLS,
             "messages": messages,
             "thinking": {"type": "adaptive"},
             "output_config": {"effort": self.settings.agent_effort},
             # Tools and system prompt are stable, so each step re-reads the growing prefix from cache.
             "cache_control": {"type": "ephemeral"},
         }
-        if not allow_tools:
-            params["tool_choice"] = {"type": "none"}
+        if self.tools:
+            params["tools"] = self.tools
+            if not allow_tools:
+                params["tool_choice"] = {"type": "none"}
         if self.settings.agent_server_fallback and self.settings.agent_model in FALLBACK_MODELS:
             params["betas"] = [FALLBACK_BETA]
             params["fallbacks"] = "default"
@@ -99,7 +110,14 @@ async def run_agent(question: str, history: list[dict], ctx: ToolContext, model:
     allow_tools = True
     json_retries = 0
     steps = 0
+    served_models: list[str] = []
 
+    def done(stop_reason: str | None) -> dict:
+        # `models` lists the model that served each turn, so callers can detect fallbacks.
+        return {"type": "done", "usage": dict(usage), "stop_reason": stop_reason, "tool_calls": tool_calls,
+                "model": served_models[-1] if served_models else None, "models": served_models}
+
+    tool_calls = 0
     while True:
         response = None
         try:
@@ -123,11 +141,14 @@ async def run_agent(question: str, history: list[dict], ctx: ToolContext, model:
             yield {"type": "error", "message": "The model stream ended without a message."}
             return
         _add_usage(usage, response.usage)
+        if getattr(response, "model", None):
+            served_models.append(response.model)
 
         if response.stop_reason == "refusal":
             details = getattr(response, "stop_details", None)
             category = getattr(details, "category", None) if details else None
             yield {"type": "error", "message": f"Claude declined this request{f' ({category})' if category else ''}."}
+            yield done("refusal")
             return
 
         content = echo_content([_as_dict(b) for b in response.content])
@@ -142,8 +163,10 @@ async def run_agent(question: str, history: list[dict], ctx: ToolContext, model:
             break
         if response.stop_reason == "max_tokens":
             yield {"type": "error", "message": "A tool call was cut off at the output limit."}
+            yield done("max_tokens")
             return
 
+        tool_calls += len(tool_uses)
         outputs = await asyncio.gather(*(run_tool(ctx, b["name"], b.get("input")) for b in tool_uses),
                                        return_exceptions=True)
         results: list[dict] = []
@@ -164,4 +187,4 @@ async def run_agent(question: str, history: list[dict], ctx: ToolContext, model:
         messages.append({"role": "user", "content": results})
 
     yield {"type": "_messages", "messages": messages}
-    yield {"type": "done", "usage": dict(usage)}
+    yield done(response.stop_reason if response is not None else None)

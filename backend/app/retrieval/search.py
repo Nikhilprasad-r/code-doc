@@ -82,18 +82,28 @@ async def hybrid_search(
     repo_embed_model: str | None,
     k: int = 8,
     path_prefix: str | None = None,
+    mode: str = "hybrid",
+    rerank: bool = True,
 ) -> list[SearchHit]:
-    keyword = await keyword_candidates(repo_id, query, path_prefix)
-    lists: list[tuple[str, list[dict]]] = [("keyword", keyword)]
+    """`mode` is "hybrid" (default), "keyword" or "vector"; the single-source modes and `rerank=False`
+    exist so the evaluation can measure what each stage contributes."""
+    if mode not in {"hybrid", "keyword", "vector"}:
+        raise ValueError(f"unknown search mode {mode!r}")
+    lists: list[tuple[str, list[dict]]] = []
+    if mode in {"hybrid", "keyword"}:
+        lists.append(("keyword", await keyword_candidates(repo_id, query, path_prefix)))
     # Vectors from a different model live in a different space; skip rather than return noise.
-    if repo_embed_model == embedder.model:
+    if mode in {"hybrid", "vector"} and repo_embed_model == embedder.model:
         vector = await vector_candidates(repo_id, await embedder.embed_query(query), path_prefix)
         lists.append(("vector", vector))
 
     fused = reciprocal_rank_fusion(*lists)[: max(k * 3, 20)]
     if not fused:
         return []
-    order = await reranker.rerank(query, [f"{r['header']}\n\n{r['content']}" for r, _, _ in fused], top_k=k)
+    if rerank:
+        order = await reranker.rerank(query, [f"{r['header']}\n\n{r['content']}" for r, _, _ in fused], top_k=k)
+    else:
+        order = [(i, 0.0) for i in range(min(k, len(fused)))]
     hits = []
     for index, rerank_score in order:
         row, fused_score, matched_by = fused[index]

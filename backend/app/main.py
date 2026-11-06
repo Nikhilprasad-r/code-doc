@@ -7,6 +7,7 @@ import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Literal
 
 import anthropic
 from arq import ArqRedis, create_pool
@@ -16,9 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from app.agent.loop import ClaudeModel, run_agent
-from app.agent.prompts import SYSTEM_PROMPT, repo_context
-from app.agent.tools import ToolContext
+from app.agent.answer import answer_question
 from app.config import get_settings
 from app.db import close_db, connection, init_db
 from app.ingest.pipeline import UPLOAD_PREFIX, index_repo
@@ -208,6 +207,8 @@ class ChatRequest(BaseModel):
     repo_id: int
     message: str = Field(min_length=1, max_length=8000)
     conversation_id: uuid.UUID | None = None
+    # "agent" (default): tool-using agent. "rag": one retrieval + one model call, no follow-up turns.
+    mode: Literal["agent", "rag"] = "agent"
 
 
 def _sse(event: dict) -> str:
@@ -234,14 +235,13 @@ async def _save_history(conversation_id: uuid.UUID, repo_id: int, messages: list
 async def _chat_events(body: ChatRequest, repo: dict) -> AsyncIterator[str]:
     conversation_id = body.conversation_id or uuid.uuid4()
     yield _sse({"type": "conversation", "id": str(conversation_id)})
-    history = await _load_history(conversation_id, repo["id"])
-    ctx = ToolContext(repo=repo, embedder=get_embedder(settings), reranker=get_reranker(settings))
-    system = [{"type": "text", "text": SYSTEM_PROMPT}, {"type": "text", "text": repo_context(repo)}]
-    model = ClaudeModel(settings, system)
+    agent = body.mode == "agent"
+    history = await _load_history(conversation_id, repo["id"]) if agent else []
     try:
-        async for event in run_agent(body.message, history, ctx, model, settings.agent_max_steps):
-            if event["type"] == "_messages":
+        async for event in answer_question(body.message, repo, mode=body.mode, history=history, settings=settings):
+            if event["type"] == "_messages" and agent:
                 await _save_history(conversation_id, repo["id"], event["messages"])
+            if event["type"].startswith("_"):
                 continue
             yield _sse(event)
     except anthropic.AuthenticationError:

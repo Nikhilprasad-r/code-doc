@@ -11,7 +11,8 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379"
     data_dir: Path = Path("./data")
 
-    # Claude. The SDK reads ANTHROPIC_API_KEY (or an `ant auth login` profile) itself.
+    # Claude. Without a key here the SDK falls back to the environment or an `ant auth login` profile.
+    anthropic_api_key: str | None = None
     agent_model: str = "claude-opus-5-5"
     agent_effort: str = "medium"
     agent_max_steps: int = 12

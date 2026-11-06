@@ -15,5 +15,10 @@ out/
 *.tsbuildinfo
 next-env.d.ts
 
-# Eval outputs
-eval/results/
+# Eval outputs: keep results.jsonl, _state.json and comparison.md; regenerate the rest
+.claude/hillclimb/**/traces/
+.claude/hillclimb/**/report.html
+.claude/hillclimb/**/state.json
+.claude/hillclimb/**/trajectory/
+.claude/hillclimb/**/progress.txt
+.claude/hillclimb/code-qa-checks/

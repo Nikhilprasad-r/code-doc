@@ -1,0 +1,10 @@
+{
+  "spring-projects/spring-petclinic": {
+    "url": "https://github.com/spring-projects/spring-petclinic",
+    "commit": "500158f732419217507c7656904b8e6aa1bcc0d6"
+  },
+  "fastapi/full-stack-fastapi-template": {
+    "url": "https://github.com/fastapi/full-stack-fastapi-template",
+    "commit": "aabb90126964a164e02aff39e7c385bb0598236d"
+  }
+}

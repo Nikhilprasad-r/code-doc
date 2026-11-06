@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.agent.loop import echo_content, run_agent
+from app.agent.single_shot import run_rag
 from app.agent.tools import TOOLS, ToolContext, run_tool
 from app.retrieval.embeddings import NoopReranker
 
@@ -53,7 +54,8 @@ class ScriptedModel:
         stop = "tool_use" if any(b["type"] == "tool_use" for b in content) else "end_turn"
         usage = SimpleNamespace(input_tokens=10, output_tokens=5, cache_read_input_tokens=0,
                                 cache_creation_input_tokens=0)
-        yield "final", SimpleNamespace(content=content, stop_reason=stop, usage=usage, stop_details=None)
+        yield "final", SimpleNamespace(content=content, stop_reason=stop, usage=usage, stop_details=None,
+                                       model="scripted-model")
 
 
 async def _collect(gen):
@@ -126,3 +128,27 @@ async def test_grep_find_imports_dependencies_and_overview(ctx):
     assert "junit-jupiter" in deps.text and "[test]" in deps.text
     overview = await run_tool(ctx, "repo_overview", {})
     assert "Endpoints:" in overview.text and "README.md" in overview.text
+
+
+@pytest.mark.integration
+async def test_done_event_reports_served_models_and_tool_calls(ctx):
+    model = ScriptedModel([
+        [{"type": "tool_use", "id": "t1", "name": "find_symbol", "input": {"name": "showOwner"}}],
+        [{"type": "text", "text": "Done."}],
+    ])
+    events = await _collect(run_agent("q", [], ctx, model, max_steps=5))
+    done = events[-1]
+    assert done["models"] == ["scripted-model", "scripted-model"]
+    assert done["tool_calls"] == 1 and done["stop_reason"] == "end_turn"
+
+
+@pytest.mark.integration
+async def test_single_shot_rag_retrieves_once_and_answers_without_tools(ctx):
+    model = ScriptedModel([[{"type": "text", "text": "Archived via [api/routes/items.py:42-45]."}]])
+    events = await _collect(run_rag("How is an item archived?", ctx, model, k=3))
+    retrieval = next(e for e in events if e["type"] == "retrieval")
+    assert retrieval["sources"] and len(retrieval["sources"]) <= 3
+    assert model.calls[0]["allow_tools"] is False
+    prompt = model.calls[0]["messages"][0]["content"]
+    assert "<excerpts>" in prompt and "Question: How is an item archived?" in prompt
+    assert events[-1]["type"] == "done" and events[-1]["tool_calls"] == 0

@@ -11,6 +11,7 @@ from pathlib import Path
 from app.ingest.languages import IGNORED_DIRS, detect_language, is_ignored_file
 
 _GIT_URL = re.compile(r"^https://[\w.-]+(:\d+)?/[\w.~-]+/[\w.~-]+?(\.git)?/?$")
+_COMMIT_SHA = re.compile(r"^[0-9a-f]{40}$")
 
 
 class SourceError(Exception):
@@ -42,6 +43,13 @@ def clone(url: str, dest: Path, ref: str | None = None) -> str:
     if dest.exists():
         shutil.rmtree(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
+    if ref and _COMMIT_SHA.match(ref):
+        # A pinned commit: fetch just that commit (GitHub allows fetching by SHA).
+        dest.mkdir()
+        _git("init", "-q", cwd=dest)
+        _git("fetch", "-q", "--depth", "1", url, ref, cwd=dest)
+        _git("checkout", "-q", "FETCH_HEAD", cwd=dest)
+        return _git("rev-parse", "HEAD", cwd=dest)
     args = ["clone", "--depth", "1", "--single-branch"]
     if ref:
         args += ["--branch", ref]

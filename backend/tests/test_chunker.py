@@ -53,3 +53,12 @@ def test_unparseable_language_falls_back_to_line_windows():
     assert len(analysis.chunks) > 1
     assert analysis.chunks[0].start_line == 1
     assert analysis.chunks[-1].end_line == 200
+
+
+def test_line_windows_overlap_and_cover_the_file():
+    text = "\n".join(f"line {i}" for i in range(1, 101))
+    analysis = analyze_file("notes.py", text, "python", 1500, chunking="lines")
+    spans = [(c.start_line, c.end_line) for c in analysis.chunks]
+    assert spans == [(1, 40), (31, 70), (61, 100)]
+    assert all(c.scope is None and not c.defines for c in analysis.chunks)
+    assert analysis.symbols == []  # no definitions in this text, but symbols are still extracted per file

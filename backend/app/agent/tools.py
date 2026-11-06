@@ -143,7 +143,7 @@ TOOLS: list[dict[str, Any]] = [
 ]
 
 
-def _numbered(lines: list[str], first_line: int) -> str:
+def numbered(lines: list[str], first_line: int) -> str:
     width = len(str(first_line + len(lines)))
     return "\n".join(f"{first_line + i:>{width}}  {line}" for i, line in enumerate(lines))
 
@@ -159,7 +159,7 @@ async def _search_code(ctx: ToolContext, args: SearchCodeArgs) -> ToolOutput:
         lines = hit.content.split("\n")
         shown = lines[:60]
         scope = f"  ({hit.scope})" if hit.scope else ""
-        body = _numbered(shown, hit.start_line)
+        body = numbered(shown, hit.start_line)
         more = f"\n   ... {len(lines) - 60} more lines; use read_file" if len(lines) > 60 else ""
         parts.append(f"[{n}] {hit.path}:{hit.start_line}-{hit.end_line}{scope}\n{body}{more}")
     sources = [{"path": h.path, "start_line": h.start_line, "end_line": h.end_line} for h in hits]
@@ -191,7 +191,7 @@ async def _read_file(ctx: ToolContext, args: ReadFileArgs) -> ToolOutput:
     end = min(args.end_line or len(lines), len(lines), start + MAX_READ_LINES - 1)
     if start > len(lines):
         return ToolOutput(f"{path} has only {len(lines)} lines.", is_error=True)
-    text = f"{path}:{start}-{end} (of {len(lines)} lines)\n{_numbered(lines[start - 1:end], start)}"
+    text = f"{path}:{start}-{end} (of {len(lines)} lines)\n{numbered(lines[start - 1:end], start)}"
     if end < len(lines) and (args.end_line is None or args.end_line > end):
         text += f"\n... continues; read from line {end + 1}"
     return ToolOutput(text, [{"path": path, "start_line": start, "end_line": end}])
