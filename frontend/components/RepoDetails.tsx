@@ -142,12 +142,15 @@ function Overview({ repo }: { repo: Repo }) {
 }
 
 function SourceLink({ path, line, onOpen }: { path: string; line: number; onOpen: (s: Source) => void }) {
+  const parts = path.split("/");
+  const short = parts.length > 2 ? `…/${parts.slice(-2).join("/")}` : path;
   return (
     <button
       onClick={() => onOpen({ path, start_line: line, end_line: line })}
-      className="text-left font-mono text-xs break-all text-accent hover:underline"
+      title={`${path}:${line}`}
+      className="text-left font-mono text-xs whitespace-nowrap text-accent hover:underline"
     >
-      {path}:{line}
+      {short}:{line}
     </button>
   );
 }
@@ -155,27 +158,29 @@ function SourceLink({ path, line, onOpen }: { path: string; line: number; onOpen
 function Table({ head, rows, empty }: { head: string[]; rows: React.ReactNode[][]; empty: string }) {
   if (rows.length === 0) return <p className="text-muted">{empty}</p>;
   return (
-    <table className="w-full border-collapse">
-      <thead>
-        <tr>
-          {head.map((h) => (
-            <th key={h} className="border-b border-border pb-1.5 text-left text-xs font-medium text-muted">
-              {h}
-            </th>
-          ))}
-        </tr>
-      </thead>
-      <tbody>
-        {rows.map((cells, i) => (
-          <tr key={i} className="border-b border-border/60 align-top">
-            {cells.map((cell, j) => (
-              <td key={j} className="py-1.5 pr-3">
-                {cell}
-              </td>
+    <div className="overflow-x-auto">
+      <table className="w-full border-collapse">
+        <thead>
+          <tr>
+            {head.map((h) => (
+              <th key={h} className="border-b border-border pr-3 pb-1.5 text-left text-xs font-medium text-muted">
+                {h}
+              </th>
             ))}
           </tr>
-        ))}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {rows.map((cells, i) => (
+            <tr key={i} className="border-b border-border/60 align-top">
+              {cells.map((cell, j) => (
+                <td key={j} className="py-1.5 pr-3">
+                  {cell}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }

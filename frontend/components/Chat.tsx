@@ -167,7 +167,8 @@ export function Chat({ repo, onOpenSource }: { repo: Repo; onOpenSource: (source
               }
             }}
             rows={Math.min(6, Math.max(1, input.split("\n").length))}
-            placeholder={ready ? "Ask about the code…  (Enter to send, Shift+Enter for a new line)" : "Indexing…"}
+            placeholder={ready ? "Ask about the code…" : "Indexing…"}
+            title="Enter to send, Shift+Enter for a new line"
             disabled={!ready}
             className="min-h-[42px] flex-1 resize-none rounded-lg border border-border bg-background px-3 py-2.5 text-sm outline-none focus:border-accent disabled:opacity-60"
           />
