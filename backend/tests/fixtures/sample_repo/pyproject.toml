@@ -1,0 +1,11 @@
+[project]
+name = "sample"
+version = "0.1.0"
+dependencies = [
+    "fastapi[standard]>=0.115,<1.0",
+    "sqlmodel>=0.0.21",
+    "pydantic-settings>=2.2.1 ; python_version >= '3.10'",
+]
+
+[dependency-groups]
+dev = ["pytest>=8.0", "ruff"]

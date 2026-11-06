@@ -1,0 +1,72 @@
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: codedoc
+      POSTGRES_PASSWORD: codedoc
+      POSTGRES_DB: codedoc
+    ports:
+      - "5433:5432"  # host 5433 avoids clashing with a locally installed Postgres
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U codedoc"]
+      interval: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  api:
+    build: ./backend
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgresql://codedoc:codedoc@db:5432/codedoc
+      REDIS_URL: redis://redis:6379
+      DATA_DIR: /data
+    ports:
+      - "8000:8000"
+    volumes:
+      - repodata:/data
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  worker:
+    build: ./backend
+    command: arq app.worker.WorkerSettings
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgresql://codedoc:codedoc@db:5432/codedoc
+      REDIS_URL: redis://redis:6379
+      DATA_DIR: /data
+    volumes:
+      - repodata:/data
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  web:
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+
+volumes:
+  pgdata:
+  repodata:
