@@ -1,3 +1,6 @@
+from app.ingest.symbols import SIGNATURE_MAX, extract_symbols, parse
+
+
 def _routes(analysis):
     return {(e.method, e.route, e.handler) for e in analysis.endpoints}
 
@@ -71,3 +74,40 @@ def test_imports(analyzed):
     modules = {m for f in analyzed.values() for m, _ in f.imports}
     assert {"api.deps", "./auth", "github.com/gin-gonic/gin",
             "org.springframework.web.bind.annotation.*"} <= modules
+
+
+def test_signatures_show_the_declaration_after_its_annotations(analyzed):
+    signatures = {s.qualified: s.signature for f in analyzed.values() for s in f.symbols}
+    # Java annotations live inside the declaration; the declaration itself used to be dropped.
+    assert signatures["OwnerController.showOwner"] == \
+        '@GetMapping("/{ownerId}") public ModelAndView showOwner(@PathVariable("ownerId") int ownerId)'
+    assert signatures["OwnerController"] == '@Controller @RequestMapping("/owners") class OwnerController'
+    # TypeScript decorators sit before the declaration, in the class body or the export statement.
+    assert signatures["UsersController.findOne"] == '@Get(":id") findOne(id: string)'
+    assert signatures["UsersController"] == '@Controller("users") class UsersController'
+    # Python: multi-line decorators and parameters are joined onto one line.
+    assert signatures["create_item"] == ('@router.post("/", response_model=Item) async def create_item(*, '
+                                         'session: SessionDep, item_in: ItemCreate, '
+                                         'user=Depends(get_current_user)) -> Item')
+    assert signatures["ItemService.archive"] == "def archive(self, item_id: int) -> None"
+    assert signatures["Server"] == "Server struct"
+    assert signatures["Server.Routes"] == "func (s *Server) Routes()"
+    assert signatures["listOrders"] == "listOrders = async (req, res)"
+
+
+def test_long_annotations_are_shortened_before_the_declaration():
+    source = b'''interface OwnerRepository extends Repository<Owner, Integer> {
+\t@Query("SELECT DISTINCT owner FROM Owner owner left join owner.pets WHERE owner.lastName LIKE :lastName% '''
+    source += b'''ORDER BY owner.lastName, owner.firstName, owner.id, owner.address, owner.city, owner.telephone")
+\t@Transactional(readOnly = true)
+\tPage<Owner> findByLastName(
+\t\t\t@Param("lastName") String lastName,
+\t\t\tPageable pageable);
+}
+'''
+    symbols = {s.qualified: s.signature for s in extract_symbols("java", parse("java", source), source)}
+    assert symbols["OwnerRepository"] == "interface OwnerRepository extends Repository<Owner, Integer>"
+    method = symbols["OwnerRepository.findByLastName"]
+    assert method.startswith('@Query("SELECT DISTINCT owner')
+    assert method.endswith('… Page<Owner> findByLastName(@Param("lastName") String lastName, Pageable pageable)')
+    assert len(method) <= SIGNATURE_MAX

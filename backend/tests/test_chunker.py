@@ -1,4 +1,5 @@
 from app.config import Settings
+from app.ingest.chunker import markdown_headings
 from app.ingest.pipeline import analyze_file
 
 
@@ -62,3 +63,45 @@ def test_line_windows_overlap_and_cover_the_file():
     assert spans == [(1, 40), (31, 70), (61, 100)]
     assert all(c.scope is None and not c.defines for c in analysis.chunks)
     assert analysis.symbols == []  # no definitions in this text, but symbols are still extracted per file
+
+
+def test_markdown_headings_skip_fenced_code_and_track_the_path():
+    lines = [
+        "# Title",
+        "#hashtag is not a heading",
+        "## Install ##",
+        "~~~",
+        "## inside a tilde fence",
+        "~~~",
+        "    # indented code",
+        "```python",
+        "# comment in a fence",
+        "````",  # a longer closing fence still closes it
+        "### Linux",
+        "## Usage",
+        "````md",
+        "```",  # shorter than the opening fence: still inside
+        "# still code",
+        "````",
+        "# Appendix",
+    ]
+    assert markdown_headings(lines) == [
+        (0, "Title"), (2, "Title > Install"), (10, "Title > Install > Linux"),
+        (11, "Title > Usage"), (16, "Appendix"),
+    ]
+
+
+def test_markdown_chunks_carry_their_heading_path_and_do_not_split_code_blocks():
+    docker = "\n".join(f"Run step {i} of the container build with docker compose and check the logs."
+                       for i in range(30))
+    text = ("# Guide\n\nIntro text for the guide.\n\n## Setup\n\nInstall the tools first.\n\n"
+            "```bash\n# install dependencies\npip install -r requirements.txt\n# run the server\nuvicorn app:app\n```\n\n"
+            f"### Docker\n{docker}\n\n## Usage\n\nCall the API.\n")
+    chunks = analyze_file("docs/guide.md", text, "markdown", 200).chunks
+    # The shell comments on lines 10 and 12 used to start new sections.
+    assert not [c for c in chunks if 10 <= c.start_line <= 14]
+    assert chunks[0].start_line == 1 and chunks[0].scope == "section Guide"
+    docker_chunks = [c for c in chunks if c.scope == "section Guide > Setup > Docker"]
+    assert len(docker_chunks) > 1  # the long section is split, and every piece keeps its path
+    assert "Scope: section Guide > Setup > Docker" in docker_chunks[-1].header
+    assert chunks[-1].scope == "section Guide > Usage"

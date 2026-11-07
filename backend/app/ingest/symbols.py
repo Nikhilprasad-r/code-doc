@@ -51,6 +51,12 @@ DEFINITION_TYPES: dict[str, dict[str, str]] = {
 }
 _CONTAINER_KINDS = {"class", "interface", "enum", "record", "type"}
 
+_DECORATIONS = {"decorator", "annotation", "marker_annotation"}
+# What may sit between a decorator and its declaration: `@Controller("users") export class UsersController`.
+_DECORATION_GAP = {"export", "default", "comment", "line_comment", "block_comment"}
+SIGNATURE_MAX = 240
+_SIGNATURE_END = re.compile(r"\s*(?:=>|[:{;=])\s*$")
+
 
 @dataclass
 class Symbol:
@@ -59,7 +65,7 @@ class Symbol:
     kind: str
     start_line: int  # 1-based, inclusive
     end_line: int
-    signature: str
+    signature: str  # annotations, then the declaration up to its body, on one line
 
 
 @lru_cache(maxsize=None)
@@ -101,6 +107,64 @@ def _arrow_function_name(node: Node) -> str | None:
     return None
 
 
+def _squash(text: bytes) -> str:
+    """Code spread over several lines, on one: `f(\\n    a,\\n    b,\\n)` -> `f(a, b)`."""
+    line = " ".join(text.decode("utf-8", "replace").split())
+    return re.sub(r",?\s+\)", ")", re.sub(r"\(\s+", "(", line))
+
+
+def _decorations(node: Node) -> tuple[list[Node], list[Node]]:
+    """A definition's annotations or decorators, split into those before the node and those inside it.
+    Python and TypeScript put them before it (in `decorated_definition`, a class body or an `export`
+    statement); Java puts them inside, in `modifiers`."""
+    before: list[Node] = []
+    sibling = node.prev_sibling
+    while sibling is not None and (sibling.type in _DECORATIONS or sibling.type in _DECORATION_GAP):
+        if sibling.type in _DECORATIONS:
+            before.append(sibling)
+        sibling = sibling.prev_sibling
+    inside = [c for c in node.children if c.type in _DECORATIONS]
+    for child in node.children:
+        if child.type == "modifiers":
+            inside.extend(c for c in child.children if c.type in _DECORATIONS)
+    return before[::-1], sorted(inside, key=lambda n: n.start_byte)
+
+
+def _body(node: Node) -> Node | None:
+    body = node.child_by_field_name("body")
+    if body is None and node.type == "variable_declarator":  # const handler = (req) => {...}
+        value = node.child_by_field_name("value")
+        body = value.child_by_field_name("body") if value is not None else None
+    return body
+
+
+def _signature(node: Node, source: bytes) -> str:
+    """`@GetMapping("/owners") public String processFindForm(int page, Owner owner)`: the annotations,
+    then the declaration up to its body, on one line. The declaration is kept whole (up to the limit);
+    long annotations are shortened first."""
+    before, inside = _decorations(node)
+    body = _body(node)
+    end = body.start_byte if body is not None else node.end_byte
+    pieces: list[bytes] = []
+    pos = node.start_byte
+    for decoration in inside:
+        if decoration.start_byte >= end:
+            break
+        pieces.append(source[pos:decoration.start_byte])
+        pos = decoration.end_byte
+    pieces.append(source[pos:end])
+    head = _squash(b" ".join(pieces))
+    if body is None:
+        head = head.split("{", 1)[0].rstrip()  # Go `Server struct {...}` -> `Server struct`
+    head = _SIGNATURE_END.sub("", head)[:SIGNATURE_MAX]
+
+    tags = " ".join(_squash(source[d.start_byte:d.end_byte]) for d in [*before, *inside])
+    room = SIGNATURE_MAX - len(head) - 1
+    if len(tags) > room:
+        tags = tags[:room - 1].rstrip() + "…" if room > 10 else ""
+    return f"{tags} {head}" if tags else head
+
+
 def extract_symbols(language: str, tree: Tree, source: bytes) -> list[Symbol]:
     def_types = DEFINITION_TYPES.get(language, {})
     symbols: list[Symbol] = []
@@ -125,7 +189,6 @@ def extract_symbols(language: str, tree: Tree, source: bytes) -> list[Symbol]:
             start = node
             if node.parent is not None and node.parent.type == "decorated_definition":
                 start = node.parent  # include Python decorators in the range
-            first_line = source[node.start_byte:node.end_byte].split(b"\n", 1)[0]
             symbols.append(
                 Symbol(
                     name=name,
@@ -133,7 +196,7 @@ def extract_symbols(language: str, tree: Tree, source: bytes) -> list[Symbol]:
                     kind=kind,
                     start_line=start.start_point.row + 1,
                     end_line=node.end_point.row + 1,
-                    signature=first_line.decode("utf-8", "replace").strip()[:200],
+                    signature=_signature(node, source),
                 )
             )
             child_scope = [*prefix, name]

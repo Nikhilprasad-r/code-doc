@@ -9,6 +9,7 @@ header goes into both the embedding input and the keyword index.
 """
 
 import re
+from bisect import bisect_right
 from dataclasses import dataclass, field
 
 from tree_sitter import Node, Tree
@@ -201,22 +202,58 @@ def chunk_line_windows(path: str, language: str | None, text: str, window: int =
     return chunks
 
 
-_MD_HEADING = re.compile(r"^#{1,6}\s")
+# ATX headings: `## Title`, optionally closed `## Title ##`. `#tag` (no space) is not a heading.
+_MD_HEADING = re.compile(r"^ {0,3}(#{1,6})[ \t]+(.+?)(?:[ \t]+#+)?[ \t]*$")
+_MD_FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+_SECTION_MAX = 200
+
+
+def markdown_headings(lines: list[str]) -> list[tuple[int, str]]:
+    """(line index, heading path) for each heading, e.g. (40, "Setup > Docker"). Lines inside fenced
+    code are skipped, so `# install dependencies` in a shell example is not a heading."""
+    headings: list[tuple[int, str]] = []
+    stack: list[tuple[int, str]] = []
+    fence: str | None = None
+    for i, line in enumerate(lines):
+        if fence:
+            stripped = line.strip()
+            if stripped.startswith(fence) and set(stripped) == {fence[0]}:
+                fence = None
+            continue
+        if match := _MD_FENCE.match(line):
+            fence = match.group(1)  # an unclosed fence runs to the end of the file
+            continue
+        if match := _MD_HEADING.match(line):
+            level = len(match.group(1))
+            while stack and stack[-1][0] >= level:
+                stack.pop()
+            stack.append((level, match.group(2).strip()))
+            headings.append((i, " > ".join(title for _, title in stack)[:_SECTION_MAX]))
+    return headings
 
 
 def chunk_text(path: str, language: str | None, text: str, max_chars: int) -> list[Chunk]:
-    """Markdown splits at headings; everything else uses line windows."""
+    """Markdown splits at headings, and each chunk's scope is the heading path it starts under;
+    everything else uses line windows."""
     lines = text.split("\n")
     if not lines:
         return []
-    if language == "markdown":
-        starts = [i for i, line in enumerate(lines) if _MD_HEADING.match(line)] or [0]
-        if starts[0] != 0:
-            starts.insert(0, 0)
-        sections = [(s, (starts[i + 1] - 1) if i + 1 < len(starts) else len(lines) - 1)
-                    for i, s in enumerate(starts)]
-        ranges = _merge_small(sections, lines, max_chars)
-        ranges = _split_long_ranges(ranges, lines, max_chars)
-    else:
-        ranges = _line_windows(lines, 0, len(lines) - 1, max_chars)
-    return _build(path, language, lines, ranges, [])
+    if language != "markdown":
+        return _build(path, language, lines, _line_windows(lines, 0, len(lines) - 1, max_chars), [])
+
+    headings = markdown_headings(lines)
+    starts = [i for i, _ in headings]
+    if not starts or starts[0] != 0:
+        starts.insert(0, 0)
+    sections = [(s, (starts[i + 1] - 1) if i + 1 < len(starts) else len(lines) - 1)
+                for i, s in enumerate(starts)]
+    ranges = _merge_small(sections, lines, max_chars)
+    ranges = _split_long_ranges(ranges, lines, max_chars)
+    chunks = _build(path, language, lines, ranges, [])
+    heading_lines = [i for i, _ in headings]
+    for chunk in chunks:
+        # The last heading at or before the chunk's first line; the second half of a long section keeps it too.
+        index = bisect_right(heading_lines, chunk.start_line - 1) - 1
+        if index >= 0:
+            chunk.scope = f"section {headings[index][1]}"
+    return chunks

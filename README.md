@@ -150,12 +150,13 @@ channels, and an agent picks between them for each question:
 | Files | Method |
 |---|---|
 | Python, JavaScript, TypeScript/TSX, Java, Go | **Syntax-aware**, after [cAST](https://arxiv.org/abs/2506.15655): pack neighbouring syntax-tree nodes up to a budget of 1,500 non-whitespace characters, split a node that is too big into its children, merge leftovers smaller than a quarter of the budget into a neighbour. Chunks cover the file exactly, with no overlap. |
-| Markdown | One chunk per heading section, merged or split to the same budget |
+| Markdown | One chunk per heading section, merged or split to the same budget. `#` lines inside fenced code blocks are not headings. |
 | Everything else | Line windows up to the same budget |
 
 Each chunk carries a header that goes into both the embedding and the keyword index: `File:`, `Scope:`
 (the enclosing class or function) and `Defines:` (the symbols it contains). A method chunk deep inside
-a class still says which class and file it belongs to. The header has no line numbers on purpose:
+a class still says which class and file it belongs to. For Markdown, `Scope:` is the heading path, such as
+`section Setup > Docker`, so every piece of a long section keeps its heading. The header has no line numbers on purpose:
 code that only moved keeps the same cache key and is not embedded again.
 
 Fixed-size windows cut functions in half and lose the enclosing scope. One chunk per function falls
@@ -336,7 +337,7 @@ are listed under production work.
 | agent | – | – | – | – | – | – |
 | agent-graph | – | – | – | – | – | – |
 
-**Tests:** 67 backend tests: 66 pass, and one is skipped when an API key is set, because it checks
+**Tests:** 71 backend tests: 70 pass, and one is skipped when an API key is set, because it checks
 the missing-key error.
 - **Unit tests:** tokenizer, chunker, extractors, graders, graph conversion, log format.
 - **Integration tests** against a real Postgres and a fixture repository covering six web frameworks in four languages:
