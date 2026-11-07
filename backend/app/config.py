@@ -29,11 +29,19 @@ class Settings(BaseSettings):
     chunk_max_chars: int = 1500
     embed_batch_size: int = 64
 
+    # Code graph (graphify). Built alongside the embeddings; a failure leaves the rest of the index usable.
+    graph_enabled: bool = True
+    graph_timeout_s: float = 600
+
     cors_origins: list[str] = ["http://localhost:3000"]
     # Indexing a server-side folder is handy locally but must be off on a shared deployment.
     allow_local_paths: bool = True
     # Public demo mode: no adding, re-indexing or deleting repositories.
     read_only: bool = False
+
+    # MCP over HTTP (/mcp): requests must carry one of these Host / Origin values (DNS-rebinding protection).
+    mcp_allowed_hosts: list[str] = ["localhost:*", "127.0.0.1:*", "[::1]:*"]
+    mcp_allowed_origins: list[str] = ["http://localhost:*", "http://127.0.0.1:*", "http://[::1]:*"]
 
     @property
     def offline_embeddings(self) -> bool:

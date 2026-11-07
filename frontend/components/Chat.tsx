@@ -1,18 +1,10 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
-import { Markdown } from "@/components/Markdown";
-import { streamChat, type Repo, type Source } from "@/lib/api";
-
-interface ToolStep {
-  name: string;
-  input?: Record<string, unknown>;
-  summary?: string;
-  sources: Source[];
-  isError?: boolean;
-  done: boolean;
-}
+import { AnswerView, type ActivationVia } from "@/components/AnswerView";
+import { InvestigationTrail, type ToolStep } from "@/components/InvestigationTrail";
+import { streamChat, type Evidence, type Repo, type Source } from "@/lib/api";
 
 interface Message {
   role: "user" | "assistant";
@@ -31,17 +23,47 @@ const SUGGESTIONS = [
   "How is authentication implemented?",
 ];
 
-export function Chat({ repo, onOpenSource }: { repo: Repo; onOpenSource: (source: Source) => void }) {
+type Activate = (msg: number, key: string, sources: Source[], label: string, via: ActivationVia, index?: number) => void;
+
+interface Props {
+  repo: Repo;
+  onEvidence: (evidence: Evidence | null) => void;
+}
+
+export function Chat({ repo, onEvidence }: Props) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
+  const [active, setActive] = useState<{ msg: number; key: string } | null>(null);
+  // Cross-highlighting between the trail and the answer: sources under the cursor, per message.
+  const [hovered, setHovered] = useState<{ msg: number; from: "claim" | "step"; sources: Source[] } | null>(null);
   const abort = useRef<AbortController | null>(null);
+  const scroller = useRef<HTMLDivElement>(null);
   const bottom = useRef<HTMLDivElement>(null);
+  const activeRef = useRef<{ msg: number; key: string } | null>(null);
+  const lastPointer = useRef(0);
 
   useEffect(() => {
-    bottom.current?.scrollIntoView({ block: "end" });
-  }, [messages]);
+    if (running) bottom.current?.scrollIntoView({ block: "end" });
+  }, [messages, running]);
+
+  const openSource = useCallback((source: Source) => onEvidence({ sources: [source], index: 0 }), [onEvidence]);
+
+  const activate: Activate = useCallback(
+    (msg, key, sources, label, via, index = 0) => {
+      const now = Date.now();
+      // Scrolling follows the reader, but never fights a hover or click that just happened.
+      if (via === "scroll" && now - lastPointer.current < 1500) return;
+      if (via !== "scroll") lastPointer.current = now;
+      const current = activeRef.current;
+      if (current?.msg === msg && current.key === key && via !== "click") return;
+      activeRef.current = { msg, key };
+      setActive({ msg, key });
+      if (sources.length) onEvidence({ sources, index, label });
+    },
+    [onEvidence],
+  );
 
   useEffect(() => () => abort.current?.abort(), []);
 
@@ -112,7 +134,7 @@ export function Chat({ repo, onOpenSource }: { repo: Repo; onOpenSource: (source
 
   return (
     <>
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-5 sm:px-6">
+      <div ref={scroller} className="min-h-0 flex-1 overflow-y-auto px-4 py-5 sm:px-6">
         {messages.length === 0 && (
           <div className="mx-auto max-w-xl pt-10">
             <p className="text-sm text-muted">
@@ -142,7 +164,17 @@ export function Chat({ repo, onOpenSource }: { repo: Repo; onOpenSource: (source
                 {m.text}
               </div>
             ) : (
-              <AssistantMessage key={i} message={m} onOpenSource={onOpenSource} />
+              <AssistantMessage
+                key={i}
+                index={i}
+                message={m}
+                activeKey={active?.msg === i ? active.key : null}
+                hovered={hovered?.msg === i ? hovered : null}
+                scrollRoot={scroller}
+                onActivate={activate}
+                onHover={(from, sources) => setHovered(sources ? { msg: i, from, sources } : null)}
+                onOpenSource={openSource}
+              />
             ),
           )}
         </div>
@@ -198,6 +230,9 @@ export function Chat({ repo, onOpenSource }: { repo: Repo; onOpenSource: (source
               onClick={() => {
                 setMessages([]);
                 setConversationId(null);
+                setActive(null);
+                activeRef.current = null;
+                onEvidence(null);
               }}
             >
               New conversation
@@ -209,53 +244,48 @@ export function Chat({ repo, onOpenSource }: { repo: Repo; onOpenSource: (source
   );
 }
 
-function AssistantMessage({ message, onOpenSource }: { message: Message; onOpenSource: (s: Source) => void }) {
-  const [open, setOpen] = useState(false);
+interface AssistantProps {
+  index: number;
+  message: Message;
+  activeKey: string | null;
+  hovered: { from: "claim" | "step"; sources: Source[] } | null;
+  scrollRoot: React.RefObject<HTMLDivElement | null>;
+  onActivate: Activate;
+  onHover: (from: "claim" | "step", sources: Source[] | null) => void;
+  onOpenSource: (source: Source) => void;
+}
+
+function AssistantMessage({ index, message, activeKey, hovered, scrollRoot, onActivate, onHover, onOpenSource }: AssistantProps) {
+  const activateHere = useCallback(
+    (key: string, sources: Source[], label: string, via: ActivationVia, i?: number) =>
+      onActivate(index, key, sources, label, via, i),
+    [index, onActivate],
+  );
+  const onHoverClaim = useCallback((sources: Source[] | null) => onHover("claim", sources), [onHover]);
   const steps = message.steps;
   return (
-    <div className="flex flex-col gap-2">
+    <div className="flex flex-col gap-3">
       {steps.length > 0 && (
-        <div className="rounded-lg border border-border bg-panel text-xs">
-          <button
-            onClick={() => setOpen(!open)}
-            className="flex w-full items-center justify-between px-3 py-2 text-muted hover:text-foreground"
-          >
-            <span>
-              {message.pending && !message.text ? "Investigating… " : ""}
-              {steps.length} tool {steps.length === 1 ? "call" : "calls"}:{" "}
-              {describe(steps[steps.length - 1])}
-            </span>
-            <span>{open ? "Hide" : "Show"}</span>
-          </button>
-          {open && (
-            <ol className="space-y-1.5 border-t border-border px-3 py-2">
-              {steps.map((step, i) => (
-                <li key={i}>
-                  <span className={step.isError ? "text-danger" : ""}>{describe(step)}</span>
-                  {step.summary && <span className="text-muted"> — {step.summary}</span>}
-                  {step.sources.length > 0 && (
-                    <div className="mt-1 flex flex-wrap gap-1">
-                      {dedupe(step.sources)
-                        .slice(0, 8)
-                        .map((s, j) => (
-                          <button
-                            key={j}
-                            onClick={() => onOpenSource(s)}
-                            className="rounded border border-border bg-background px-1.5 font-mono text-[11px] text-accent hover:border-accent"
-                          >
-                            {s.path}:{s.start_line}
-                            {s.end_line !== s.start_line ? `-${s.end_line}` : ""}
-                          </button>
-                        ))}
-                    </div>
-                  )}
-                </li>
-              ))}
-            </ol>
-          )}
-        </div>
+        <InvestigationTrail
+          steps={steps}
+          investigating={!!message.pending && !message.text}
+          linkedSources={hovered?.from === "claim" ? hovered.sources : null}
+          onHoverStep={(sources) => onHover("step", sources)}
+          onOpenSource={onOpenSource}
+        />
       )}
-      {message.text && <Markdown text={message.text} onOpenSource={onOpenSource} />}
+      {message.text && (
+        <AnswerView
+          text={message.text}
+          pending={!!message.pending}
+          activeKey={activeKey}
+          linkedSources={hovered?.from === "step" ? hovered.sources : null}
+          scrollRoot={scrollRoot}
+          onActivate={activateHere}
+          onHoverClaim={onHoverClaim}
+          onOpenSource={onOpenSource}
+        />
+      )}
       {message.pending && !message.text && steps.length === 0 && (
         <p className="animate-pulse text-sm text-muted">Thinking…</p>
       )}
@@ -268,7 +298,7 @@ function AssistantMessage({ message, onOpenSource }: { message: Message; onOpenS
         <p className="rounded-md border border-danger/40 px-3 py-2 text-sm text-danger">{message.error}</p>
       )}
       {message.usage && !message.pending && (
-        <p className="text-[11px] text-muted">
+        <p className="pl-8 text-[11px] text-muted">
           {(message.usage.input_tokens ?? 0) +
             (message.usage.cache_read_input_tokens ?? 0) +
             (message.usage.cache_creation_input_tokens ?? 0)}{" "}
@@ -278,41 +308,4 @@ function AssistantMessage({ message, onOpenSource }: { message: Message; onOpenS
       )}
     </div>
   );
-}
-
-function dedupe(sources: Source[]): Source[] {
-  const seen = new Set<string>();
-  return sources.filter((s) => {
-    const key = `${s.path}:${s.start_line}-${s.end_line}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-}
-
-function describe(step: ToolStep): string {
-  const input = step.input ?? {};
-  const str = (key: string) => (typeof input[key] === "string" ? (input[key] as string) : "");
-  switch (step.name) {
-    case "repo_overview":
-      return "Read the repository overview";
-    case "search_code":
-      return `Searched “${str("query")}”`;
-    case "read_file": {
-      const range = input.start_line ? `:${input.start_line}-${input.end_line ?? ""}` : "";
-      return `Read ${str("path")}${range}`;
-    }
-    case "grep":
-      return `Grepped /${str("pattern")}/`;
-    case "find_symbol":
-      return `Looked up ${str("name")}`;
-    case "list_endpoints":
-      return "Listed endpoints";
-    case "list_dependencies":
-      return "Listed dependencies";
-    case "find_imports":
-      return `Found imports of ${str("module_contains")}`;
-    default:
-      return step.name;
-  }
 }

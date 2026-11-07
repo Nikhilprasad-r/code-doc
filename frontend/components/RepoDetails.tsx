@@ -98,6 +98,12 @@ export function RepoDetails({ repo, onOpenSource }: { repo: Repo; onOpenSource: 
   );
 }
 
+function graphSummary(graph: Repo["stats"]["graph"]): string | undefined {
+  if (!graph) return undefined;
+  if (graph.error) return "Not available";
+  return `${graph.nodes} nodes, ${graph.edges} links, ${graph.communities} modules`;
+}
+
 function Overview({ repo }: { repo: Repo }) {
   const s = repo.stats;
   if (repo.status !== "ready") {
@@ -112,6 +118,7 @@ function Overview({ repo }: { repo: Repo }) {
     ["Dependencies", s.dependencies],
     ["Embedding model", s.embed_model],
     ["Indexed in", s.seconds !== undefined ? `${s.seconds}s` : undefined],
+    ["Code graph", graphSummary(s.graph)],
   ];
   return (
     <div className="space-y-5">

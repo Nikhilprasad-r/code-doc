@@ -8,87 +8,62 @@ streaming the API no longer validates tool arguments itself.
 import fnmatch
 import re
 from collections import Counter, defaultdict
-from dataclasses import dataclass, field
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
+from app.agent import graph_tools
+from app.agent.toolbase import MAX_OUTPUT_CHARS, Args, ToolContext, ToolOutput
 from app.db import connection
-from app.retrieval.embeddings import Embedder, Reranker
 from app.retrieval.search import hybrid_search
 
-MAX_OUTPUT_CHARS = 12_000
+__all__ = ["GRAPH_TOOL_NAMES", "MAX_OUTPUT_CHARS", "TOOLS", "ToolContext", "ToolOutput", "has_graph",
+           "numbered", "run_tool", "tools_for"]
+
 MAX_READ_LINES = 300
 
 
-@dataclass
-class ToolContext:
-    repo: dict
-    embedder: Embedder
-    reranker: Reranker
-
-    @property
-    def repo_id(self) -> int:
-        return self.repo["id"]
-
-
-@dataclass
-class ToolOutput:
-    text: str
-    sources: list[dict] = field(default_factory=list)
-    is_error: bool = False
-
-    def clipped(self) -> str:
-        if len(self.text) <= MAX_OUTPUT_CHARS:
-            return self.text
-        return self.text[:MAX_OUTPUT_CHARS] + "\n... [output truncated; narrow the query]"
-
-
-class _Args(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-
-class SearchCodeArgs(_Args):
+class SearchCodeArgs(Args):
     query: str = Field(description="What to look for: a concept, behaviour, or identifier.", min_length=1)
     path_prefix: str | None = Field(None, description="Only search under this directory, e.g. 'src/api/'.")
     k: int = Field(8, ge=1, le=15, description="Number of results.")
 
 
-class ReadFileArgs(_Args):
+class ReadFileArgs(Args):
     path: str = Field(description="Repository-relative file path, as shown by other tools.")
     start_line: int | None = Field(None, ge=1, description="First line to show (1-based).")
     end_line: int | None = Field(None, ge=1, description="Last line to show (inclusive).")
 
 
-class GrepArgs(_Args):
+class GrepArgs(Args):
     pattern: str = Field(description="Python regular expression.", min_length=1, max_length=200)
     path_glob: str | None = Field(None, description="Only files matching this glob, e.g. '*.py' or 'src/**'.")
     case_sensitive: bool = False
     max_results: int = Field(50, ge=1, le=200)
 
 
-class FindSymbolArgs(_Args):
+class FindSymbolArgs(Args):
     name: str = Field(description="Function, class, method or type name (qualified names like 'Cls.method' work).",
                       min_length=1)
     kind: str | None = Field(None, description="Optional filter: function, method, class, interface, type, enum.")
 
 
-class ListEndpointsArgs(_Args):
+class ListEndpointsArgs(Args):
     method: str | None = Field(None, description="HTTP method filter, e.g. GET.")
     route_contains: str | None = Field(None, description="Substring of the route, e.g. '/users'.")
 
 
-class ListDependenciesArgs(_Args):
+class ListDependenciesArgs(Args):
     name_contains: str | None = Field(None, description="Substring of the package name.")
     ecosystem: str | None = Field(None, description="pypi, npm, maven, go or cargo.")
 
 
-class FindImportsArgs(_Args):
+class FindImportsArgs(Args):
     module_contains: str = Field(description="Substring of the imported module, e.g. 'redis' or 'auth'.",
                                  min_length=1)
 
 
-class RepoOverviewArgs(_Args):
+class RepoOverviewArgs(Args):
     pass
 
 
@@ -135,12 +110,24 @@ _DEFINITIONS: list[tuple[str, str, type[BaseModel]]] = [
      FindImportsArgs),
 ]
 
+_DEFINITIONS += graph_tools.DEFINITIONS
+GRAPH_TOOL_NAMES = frozenset(name for name, _, _ in graph_tools.DEFINITIONS)
+
 ARG_MODELS = {name: model for name, _, model in _DEFINITIONS}
 
 TOOLS: list[dict[str, Any]] = [
     {"name": name, "description": description, "input_schema": _schema(model), "eager_input_streaming": True}
     for name, description, model in _DEFINITIONS
 ]
+
+
+def tools_for(graph: bool) -> list[dict[str, Any]]:
+    """The tool list to offer: the graph tools only when the repository has a code graph."""
+    return TOOLS if graph else [t for t in TOOLS if t["name"] not in GRAPH_TOOL_NAMES]
+
+
+def has_graph(repo: dict) -> bool:
+    return bool(((repo.get("stats") or {}).get("graph") or {}).get("nodes"))
 
 
 def numbered(lines: list[str], first_line: int) -> str:
@@ -381,6 +368,7 @@ _HANDLERS = {
     "list_endpoints": _list_endpoints,
     "list_dependencies": _list_dependencies,
     "find_imports": _find_imports,
+    **graph_tools.HANDLERS,
 }
 
 

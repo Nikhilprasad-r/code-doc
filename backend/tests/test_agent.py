@@ -13,7 +13,7 @@ from app.retrieval.embeddings import NoopReranker
 def test_tool_schemas_are_plain_json_schema():
     names = {t["name"] for t in TOOLS}
     assert names == {"repo_overview", "search_code", "read_file", "grep", "find_symbol", "list_endpoints",
-                     "list_dependencies", "find_imports"}
+                     "list_dependencies", "find_imports", "architecture", "related", "impact"}
     for tool in TOOLS:
         schema = tool["input_schema"]
         assert schema["type"] == "object"

@@ -5,6 +5,7 @@
     uv run python -m evals.run run --design naive-rag        # -> .claude/hillclimb/code-qa/baseline/
     uv run python -m evals.run run --design hybrid-rag       # -> .../v1/
     uv run python -m evals.run run --design agent            # -> .../v2/
+    uv run python -m evals.run run --design agent-graph      # -> .../v3/
     uv run python -m evals.run summarize                     # comparison table (quality, latency, cost)
     uv run python -m evals.run judge-check                   # judge must fail empty / "I don't know" / off-topic
     uv run python -m evals.run run --design null --no-judge  # harness checks -> .claude/hillclimb/code-qa-checks/
@@ -58,9 +59,18 @@ METRICS = [
 PERF_FIELDS = [{"id": "latency_s", "label": "Latency", "unit": "s"}, {"id": "tool_calls", "label": "Tool calls"},
                {"id": "cost_usd", "label": "Cost", "unit": "$"}]
 
-# First-party $/MTok (input, output). Cache reads bill at 0.1x input, cache writes at 1.25x input.
-PRICES = {"claude-opus-5-5": (4.0, 20.0), "claude-sonnet-5-5": (2.0, 10.0), "claude-haiku-5-5": (0.10, 0.50),
-          "claude-fable-5-1": (10.0, 50.0), "claude-opus-5": (5.0, 25.0), "claude-sonnet-5": (2.0, 10.0)}
+# First-party $/MTok: (input, output, 5-minute cache write, cache read). The agent's cache_control uses
+# the default 5-minute TTL. The cache-read rate is not a fixed share of input (0.05x for Opus 5.5 and
+# Sonnet 5.5, 0.025x for Fable 5.1, 0.1x for the others), so each one is listed. Haiku 5.5 is priced at
+# its tier for prompts up to 100k tokens; prompts above that cost 5x.
+PRICES = {
+    "claude-fable-5-1": (10.0, 50.0, 12.50, 0.25),
+    "claude-opus-5-5": (4.0, 20.0, 5.00, 0.20),
+    "claude-sonnet-5-5": (2.0, 10.0, 2.50, 0.10),
+    "claude-haiku-5-5": (0.10, 0.50, 0.125, 0.01),
+    "claude-opus-5": (5.0, 25.0, 6.25, 0.50),
+    "claude-sonnet-5": (2.0, 10.0, 2.50, 0.20),
+}
 
 RETRYABLE = (anthropic.RateLimitError, anthropic.InternalServerError, anthropic.APIConnectionError)
 
@@ -79,10 +89,10 @@ def load_cases(ids: str | None = None) -> list[dict]:
 def cost_usd(model: str | None, usage: dict) -> float | None:
     if not model or model not in PRICES or not usage:
         return None
-    price_in, price_out = PRICES[model]
+    price_in, price_out, price_cache_write, price_cache_read = PRICES[model]
     return (usage.get("input_tokens", 0) * price_in
-            + usage.get("cache_read_input_tokens", 0) * price_in * 0.1
-            + usage.get("cache_creation_input_tokens", 0) * price_in * 1.25
+            + usage.get("cache_read_input_tokens", 0) * price_cache_read
+            + usage.get("cache_creation_input_tokens", 0) * price_cache_write
             + usage.get("output_tokens", 0) * price_out) / 1_000_000
 
 
@@ -101,7 +111,8 @@ def load_state(flow_dir: Path) -> dict:
     path = flow_dir / "_state.json"
     state = json.loads(path.read_text()) if path.exists() else {}
     state.update({"metrics": METRICS, "perf_fields": PERF_FIELDS, "harness_paths": HARNESS_PATHS,
-                  "prices": {m: {"in": p[0], "out": p[1]} for m, p in PRICES.items()}})
+                  "prices": {m: {"in": p[0], "out": p[1], "cache_write_5m": p[2], "cache_read": p[3]}
+                             for m, p in PRICES.items()}})
     return state
 
 

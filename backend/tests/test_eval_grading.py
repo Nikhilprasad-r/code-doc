@@ -2,6 +2,8 @@
 
 import json
 
+import pytest
+
 from evals.grading import citation_scores, found_gold, grade_items, item_present, parse_citations
 from evals.run import CASES_PATH, REPOS_PATH, cost_usd
 
@@ -49,10 +51,13 @@ def test_items_need_exact_routes_and_package_names():
     assert score == 2 / 3 and "mysql-connector-j" in explanation
 
 
-def test_cost_uses_cache_multipliers():
+def test_cost_uses_each_models_cache_prices():
     usage = {"input_tokens": 1_000_000, "output_tokens": 100_000, "cache_read_input_tokens": 1_000_000,
              "cache_creation_input_tokens": 1_000_000}
-    assert cost_usd("claude-opus-5-5", usage) == 4.0 + 0.4 + 5.0 + 2.0
+    # input + cache read + 5-minute cache write + output, at the published $/MTok
+    assert cost_usd("claude-opus-5-5", usage) == pytest.approx(4.0 + 0.20 + 5.00 + 2.0)
+    assert cost_usd("claude-sonnet-5-5", usage) == pytest.approx(2.0 + 0.10 + 2.50 + 1.0)
+    assert cost_usd("claude-haiku-5-5", usage) == pytest.approx(0.10 + 0.01 + 0.125 + 0.05)
     assert cost_usd("unknown-model", usage) is None
 
 

@@ -6,7 +6,6 @@ import logging
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from pathlib import Path
 from typing import Literal
 
 import anthropic
@@ -15,19 +14,32 @@ from arq.connections import RedisSettings
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import BaseModel, Field
 
+from app import repos
 from app.agent.answer import answer_question
 from app.config import get_settings
 from app.db import close_db, connection, init_db
 from app.ingest.pipeline import UPLOAD_PREFIX, index_repo
-from app.ingest.source import is_git_url, repo_name
+from app.ingest.source import repo_name
+from app.mcp_server import server as mcp_server
 from app.retrieval.embeddings import get_embedder, get_reranker
 from app.retrieval.search import hybrid_search
 
 log = logging.getLogger("codedoc")
 settings = get_settings()
 _background: set[asyncio.Task] = set()
+
+# The MCP server over streamable HTTP at /mcp. Created here so its session manager exists for the lifespan.
+mcp_http_app = mcp_server.streamable_http_app(
+    streamable_http_path="/mcp",
+    transport_security=TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=settings.mcp_allowed_hosts,
+        allowed_origins=settings.mcp_allowed_origins,
+    ),
+)
 
 
 @asynccontextmanager
@@ -40,7 +52,8 @@ async def lifespan(app: FastAPI):
     except Exception:  # no Redis: index inside this process (fine for local development)
         log.warning("Redis unavailable at %s; indexing will run in-process", settings.redis_url)
         app.state.arq = None
-    yield
+    async with mcp_server.session_manager.run():
+        yield
     if app.state.arq is not None:
         await app.state.arq.close()
     await close_db()
@@ -73,18 +86,10 @@ async def _enqueue(repo_id: int) -> None:
 
 
 async def _get_repo(repo_id: int) -> dict:
-    async with connection() as conn:
-        repo = await (await conn.execute("SELECT * FROM repos WHERE id = %s", [repo_id])).fetchone()
+    repo = await repos.get_repo(repo_id)
     if repo is None:
         raise HTTPException(404, "Repository not found")
     return repo
-
-
-async def _insert_repo(name: str, source: str, ref: str | None) -> dict:
-    async with connection() as conn:
-        return await (await conn.execute(
-            "INSERT INTO repos (name, source, ref) VALUES (%s, %s, %s) RETURNING *", [name, source, ref],
-        )).fetchone()
 
 
 @app.get("/health")
@@ -104,13 +109,10 @@ async def list_repos() -> list[dict]:
 @app.post("/repos", status_code=202)
 async def create_repo(body: RepoCreate) -> dict:
     _require_writable()
-    source = body.source.strip()
-    if not is_git_url(source):
-        if not settings.allow_local_paths:
-            raise HTTPException(400, "Only https git URLs are accepted here")
-        if not Path(source).expanduser().is_dir():
-            raise HTTPException(400, "Source must be an https git URL or an existing folder")
-    repo = await _insert_repo(repo_name(source), source, body.ref)
+    try:
+        repo = await repos.create_repo(body.source, body.ref, settings)
+    except repos.RepoError as exc:
+        raise HTTPException(400, str(exc)) from exc
     await _enqueue(repo["id"])
     return repo
 
@@ -120,7 +122,7 @@ async def upload_repo(file: UploadFile = File(...)) -> dict:
     _require_writable()
     if not (file.filename or "").lower().endswith(".zip"):
         raise HTTPException(400, "Upload a .zip archive")
-    repo = await _insert_repo(repo_name(file.filename or "upload.zip"), UPLOAD_PREFIX + (file.filename or ""), None)
+    repo = await repos.insert_repo(repo_name(file.filename or "upload.zip"), UPLOAD_PREFIX + (file.filename or ""), None)
     target = settings.data_dir / "uploads" / f"{repo['id']}.zip"
     target.parent.mkdir(parents=True, exist_ok=True)
     with target.open("wb") as out:
@@ -271,3 +273,7 @@ async def chat(body: ChatRequest) -> StreamingResponse:
         raise HTTPException(409, f"Repository is {repo['status']}, not ready")
     return StreamingResponse(_chat_events(body, repo), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+# Mounted last so every API route above takes precedence; the MCP app only answers /mcp.
+app.mount("/", mcp_http_app)

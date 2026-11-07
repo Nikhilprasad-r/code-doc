@@ -12,6 +12,8 @@ export interface RepoStats {
   languages?: Record<string, number>;
   embed_model?: string;
   seconds?: number;
+  /** Code graph from graphify, or the reason it could not be built. */
+  graph?: { nodes?: number; edges?: number; communities?: number; error?: string } | null;
 }
 
 export interface Repo {
@@ -31,6 +33,15 @@ export interface Source {
   start_line: number;
   end_line: number;
 }
+
+/** What the evidence panel shows: the citations behind one claim, which one is in focus, and a label. */
+export interface Evidence {
+  sources: Source[];
+  index: number;
+  label?: string;
+}
+
+const fileCache = new Map<string, Promise<FileContent>>();
 
 export interface FileContent {
   path: string;
@@ -111,8 +122,17 @@ export const api = {
   },
   reindex: (id: number) => request<Repo>(`/repos/${id}/reindex`, { method: "POST" }),
   deleteRepo: (id: number) => request<void>(`/repos/${id}`, { method: "DELETE" }),
-  file: (id: number, path: string) =>
-    request<FileContent>(`/repos/${id}/file?path=${encodeURIComponent(path)}`),
+  /** Cached per repository and commit: the evidence panel re-opens the same files as you move between claims. */
+  file: (id: number, path: string, commit?: string | null) => {
+    const key = `${id}@${commit ?? ""}:${path}`;
+    let pending = fileCache.get(key);
+    if (!pending) {
+      pending = request<FileContent>(`/repos/${id}/file?path=${encodeURIComponent(path)}`);
+      pending.catch(() => fileCache.delete(key));
+      fileCache.set(key, pending);
+    }
+    return pending;
+  },
   endpoints: (id: number) => request<EndpointRow[]>(`/repos/${id}/endpoints`),
   dependencies: (id: number) => request<DependencyRow[]>(`/repos/${id}/dependencies`),
 };

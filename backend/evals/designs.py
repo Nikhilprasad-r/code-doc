@@ -1,4 +1,4 @@
-"""The three designs under comparison, plus two harness checks.
+"""The four designs under comparison, plus two harness checks.
 
 Every real design goes through `app.agent.answer.answer_question`, the same entry point the HTTP API
 uses; designs only differ in the index they read (chunking) and the answering mode.
@@ -24,6 +24,7 @@ class Design:
     mode: str = "agent"   # agent | rag | oracle | null
     search_mode: str = "hybrid"
     rerank: bool = True
+    graph_tools: bool = False
 
     @property
     def calls_model(self) -> bool:
@@ -37,6 +38,8 @@ DESIGNS = {d.name: d for d in [
            mode="rag", search_mode="hybrid", rerank=True),
     Design("agent", "v2", "(c) Agent with 8 tools over syntax-aware chunks, symbols, endpoints, dependencies",
            mode="agent"),
+    Design("agent-graph", "v3", "(d) Agent (c) plus 3 code-graph tools from graphify: architecture, related, "
+           "impact", mode="agent", graph_tools=True),
     # Harness checks: no model calls. `oracle` answers with the gold facts and citations (must score ~1),
     # `null` answers with an empty string (must score ~0).
     Design("null", "baseline", "Harness check: empty answer", flow="code-qa-checks", mode="null"),
@@ -123,7 +126,8 @@ async def run_design(design: Design, case: dict, repo: dict, settings: Settings,
     done: dict = {}
     started = time.monotonic()
     async for event in answer_question(question, repo, mode=design.mode, settings=settings, client=client,
-                                       search_mode=design.search_mode, rerank=design.rerank):
+                                       search_mode=design.search_mode, rerank=design.rerank,
+                                       graph_tools=design.graph_tools):
         kind = event["type"]
         if kind == "_system":
             system = event["system"]

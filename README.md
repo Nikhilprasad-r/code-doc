@@ -3,8 +3,8 @@
 Ask questions about a codebase — how it works, where something is implemented, which API endpoints
 and dependencies it has — and get answers that cite the exact files and lines they rely on.
 
-It ingests a GitHub repository, an uploaded zip, or a local folder, builds several indexes over it,
-and answers with a Claude agent that searches and reads the code through tools.
+It ingests a GitHub repository, an uploaded zip, or a local folder, builds several indexes and a code
+graph over it, and answers with a Claude agent that searches and reads the code through tools.
 
 ## Quick start
 
@@ -41,12 +41,14 @@ flowchart LR
         W --> E[endpoint extractors]
         W --> D[manifest parsers]
         C --> V[Voyage code embeddings<br/>cached by content hash]
+        S --> G[graphify code graph<br/>subprocess, no LLM]
     end
     subgraph Postgres
         T1[(chunks: tsvector + pgvector)]
         T2[(symbols, imports)]
         T3[(endpoints, dependencies)]
         T4[(files)]
+        T5[(graph: nodes, links, modules)]
     end
     V --> T1
     Y --> T2
@@ -54,9 +56,10 @@ flowchart LR
     E --> T3
     D --> T3
     W --> T4
+    G --> T5
     subgraph Answering [Answering - api]
         Q[question] --> A[Claude agent loop]
-        A <-->|tools| T1 & T2 & T3 & T4
+        A <-->|tools| T1 & T2 & T3 & T4 & T5
         A --> R[streamed answer with path:line citations]
     end
 ```
@@ -82,10 +85,24 @@ flowchart LR
      `build.gradle(.kts)`, `go.mod`, `Cargo.toml`, with versions and scopes.
 4. **Embeddings** with `voyage-code-3`, cached by a hash of the chunk text. Re-indexing a new commit
    only embeds chunks that changed (re-indexing PetClinic with no changes: 366/366 cache hits).
+5. **Code graph**, built by [graphify](https://github.com/safishamsi/graphify) (MIT) while the
+   embeddings are computed. graphify parses the checkout with tree-sitter (no LLM calls, 20+
+   languages). Its nodes are files and symbols. Its links cover calls, references, imports,
+   inheritance and membership, and it groups the nodes into communities, which this app calls
+   modules. Only its output file (`graph.json`) is relied on:
+   - Nodes are kept only for indexed code files, and matched to the symbol table so each one has a
+     full line range to cite.
+   - Names defined outside the repository (library types, annotations) become one external node each.
+   - Each module is labelled by its most connected symbols and its main directory.
+
+   graphify runs as a subprocess with no API keys in its environment. Its output goes under
+   `DATA_DIR`, never into the repository. If it fails, the rest of the index is unaffected and the
+   graph tools are simply not offered. PetClinic: 297 nodes, 1,088 links, 21 modules in 1.2 s. FastAPI
+   template: 907 nodes, 2,990 links, 60 modules in 1.9 s.
 
 ### Answering
 
-The agent (Claude, `claude-opus-5-5` by default) works through eight tools:
+The agent (Claude, `claude-opus-5-5` by default) works through eleven tools:
 
 | Tool | Backed by | Typical question |
 |---|---|---|
@@ -97,16 +114,32 @@ The agent (Claude, `claude-opus-5-5` by default) works through eight tools:
 | `list_endpoints` | endpoints table | "What are the API endpoints?" |
 | `list_dependencies` | dependencies table | "What does this depend on?" |
 | `find_imports` | imports table | "What uses Redis?" |
+| `architecture` | code graph: modules, most connected symbols | "How is this codebase organised?" |
+| `related` | code graph: one symbol's links | "What does `login_access_token` call?" |
+| `impact` | code graph: dependants, by distance | "What breaks if I change `Owner.addVisit`?" |
+
+The three graph tools are offered only for repositories whose graph was built.
 
 **Hybrid search** runs Postgres full-text search over code-aware terms (`getUserById` is indexed as
 `getuserbyid get user by id`) and pgvector similarity in parallel, fuses the lists with Reciprocal
 Rank Fusion, then reranks the top candidates with Voyage `rerank-2.5`.
 
-Answers stream to the browser over server-sent events. Every claim is cited as `[path:start-end]`;
-the UI turns those into links that open the code viewer at the highlighted lines, and lists every
-tool call with the sources it returned. The system prompt and tool definitions are prompt-cached, so
-each step of the agent loop re-reads the growing conversation from cache. Server-side refusal
-fallback is enabled for models that support it.
+Answers stream to the browser over server-sent events. Every claim is cited as `[path:start-end]`,
+and the UI is built around those citations:
+
+- **Investigation trail.** The agent's tool calls appear live as a trail of steps above the answer
+  (searches, symbol lookups, files read, graph lookups), each showing how many code locations it
+  returned.
+- **Evidence rail.** Each paragraph, list item and table row of the answer is a claim. Claims that
+  cite code get a stop on a rail beside the answer. Hovering, clicking, or scrolling a claim into
+  view shows its cited lines in the evidence panel, with every citation of that claim highlighted.
+  Claims without a citation get a hollow marker, and a line under the answer counts how many points
+  cite code.
+- **Cross-highlighting.** Hovering a claim lights up the trail steps that found its evidence;
+  hovering a step outlines the claims it supports.
+
+The system prompt and tool definitions are prompt-cached, so each step of the agent loop re-reads
+the growing conversation from cache. Server-side refusal fallback is enabled for models that support it.
 
 ## Design decisions
 
@@ -117,11 +150,12 @@ fallback is enabled for models that support it.
 | Keyword + vector search, not vectors alone | Embeddings blur exact identifiers; keyword search nails them but misses paraphrases. | Two queries per search plus a rerank call. |
 | One Postgres for every index | One service to run, transactional writes, SQL joins across indexes. Fine to millions of chunks with HNSW. | Past that, move vectors to a dedicated store (see below). |
 | Offline hashing embedder fallback | The stack runs and tests pass with no API keys. | Not semantic; only for development. |
+| Code graph from graphify, run as a subprocess | "What uses X" and "what does this module connect to" are graph questions. graphify already does multi-language extraction and community detection, in seconds and without LLM calls. A subprocess contains crashes and keeps API keys out of it. | A third-party format to track: pinned to an exact release and covered by tests. Calls are resolved statically, so some are missing; the tools say so and point to `grep`. |
 
 ## Evaluation
 
 The eval measures whether the design choices above actually matter. It asks the same 40 questions of
-three designs and grades every answer.
+four designs and grades every answer.
 
 **Questions** ([backend/evals/CASES.md](backend/evals/CASES.md)): 20 each about
 `spring-projects/spring-petclinic` and `fastapi/full-stack-fastapi-template`, pinned to fixed commits.
@@ -136,7 +170,8 @@ evidence, all checked against the pinned code.
 |---|---|---|---|---|
 | (a) | `naive-rag` | fixed 40-line windows | vector only | one model call |
 | (b) | `hybrid-rag` | syntax-aware chunks | keyword + vector, reranked | one model call |
-| (c) | `agent` (shipped) | syntax-aware chunks + structured tables | 8 tools, as many calls as it needs | agent loop |
+| (c) | `agent` | syntax-aware chunks + structured tables | 8 tools, as many calls as it needs | agent loop |
+| (d) | `agent-graph` (shipped) | (c) + code graph | (c)'s tools + `architecture`, `related`, `impact` | agent loop |
 
 **Metrics** (0–1, higher is better):
 
@@ -148,7 +183,8 @@ evidence, all checked against the pinned code.
 | `found_gold` | Whether anything retrieved or read overlaps a gold location (retrieval recall). |
 
 The runner also records latency, tool calls, and tokens, and the summary prices them into $/question,
-including the judge. Results go to `.claude/hillclimb/code-qa/` (`baseline` = a, `v1` = b, `v2` = c), and
+including the judge. Results go to `.claude/hillclimb/code-qa/` (`baseline` = a, `v1` = b, `v2` = c,
+`v3` = d), and
 an HTML report is built from them.
 
 **Harness checks.** An oracle (the gold facts with gold citations) and a null (empty answer) are run
@@ -185,6 +221,10 @@ uv run python -m evals.run run --design agent
 ```
 
 ```bash
+uv run python -m evals.run run --design agent-graph
+```
+
+```bash
 uv run python -m evals.run summarize
 ```
 
@@ -192,6 +232,50 @@ uv run python -m evals.run summarize
 lockfile). Later runs refuse to start if any of them changed until someone reviews and re-approves,
 so results from different eval versions are never mixed. Runs are resumable: re-running a command
 skips answers already scored.
+
+## Use it from Claude Code, Cursor, or any MCP client
+
+The assistant is also an MCP server, so coding agents can query indexed repositories directly. Its
+code tools are the agent's own, so a client sees exactly what the built-in agent sees.
+
+| Tool | What it does |
+|---|---|
+| `list_repositories` | Indexed repositories with status, commit, and size |
+| `ask_codebase` | Runs the full agent and returns a cited answer (uses the server's Anthropic key; reports progress per step) |
+| `repo_overview`, `search_code`, `read_file`, `grep`, `find_symbol` | Explore the code |
+| `list_endpoints`, `list_dependencies`, `find_imports` | The structured tables |
+| `architecture`, `related`, `impact` | The code graph: modules, a symbol's links, what depends on it |
+| `index_repository` | Index or re-index a git URL (or local folder, when allowed) |
+
+Every code tool takes `repo` (a name like `spring-petclinic`, or an id). It can be left out when only
+one repository is indexed or `CODEDOC_REPO` is set.
+
+**Over HTTP**, with the Docker stack running:
+
+```bash
+claude mcp add --transport http codedoc http://localhost:8000/mcp
+```
+
+**Over stdio**, without Docker for the server itself (the database still has to be running):
+
+```bash
+claude mcp add codedoc -- uv --directory /path/to/code-doc/backend run python -m app.mcp_server
+```
+
+For Cursor or other clients that read an `mcpServers` JSON config:
+
+```json
+{
+  "mcpServers": {
+    "codedoc": { "url": "http://localhost:8000/mcp" }
+  }
+}
+```
+
+The HTTP endpoint has no authentication, like the rest of the API. It only accepts requests whose
+`Host` and `Origin` are localhost (DNS-rebinding protection); widen that with `MCP_ALLOWED_HOSTS` and
+`MCP_ALLOWED_ORIGINS` (JSON lists) only behind your own auth. `READ_ONLY=true` disables
+`index_repository`, and `ALLOW_LOCAL_PATHS=false` limits it to git URLs.
 
 ## Scaling path
 
@@ -207,8 +291,9 @@ What is built for single repositories up to roughly 500k lines, and what changes
 - **Large repositories.** `grep` scans stored files in Python; for monorepos, use a trigram index
   (zoekt) or ripgrep over the checkout. Move vectors to Qdrant or turbopuffer, and keyword search to
   a BM25 engine (ParadeDB `pg_search`, Tantivy).
-- **Precision.** Replace name-based symbol lookup with SCIP indexes for exact definitions and
-  references, and add a call graph for "what calls X" and "what does this request touch".
+- **Precision.** The code graph resolves calls statically and marks the ones it inferred. SCIP
+  indexes (compiler-grade definitions and references) would make `related` and `impact` exact,
+  including calls into dependencies.
 - **Many repositories / tenants.** Per-organisation isolation, auth, and cross-repo search
   (linking an HTTP client call to the endpoint in another service).
 
@@ -244,10 +329,10 @@ cd backend && uv run pytest
 
 ```
 backend/app/
-  ingest/      source handling, chunker, symbols, endpoints, dependencies, pipeline
+  ingest/      source handling, chunker, symbols, endpoints, dependencies, code graph, pipeline
   retrieval/   tokenizer, embeddings + reranker, hybrid search
-  agent/       tools, system prompt, streaming agent loop
-  main.py      HTTP API      worker.py   arq worker
+  agent/       tools (+ graph tools), system prompt, streaming agent loop, single-call RAG mode
+  main.py      HTTP API (+ MCP at /mcp)   mcp_server.py  MCP server   worker.py  arq worker
 backend/tests/ unit + integration tests, multi-framework fixture repo
 frontend/      Next.js UI (repo list, chat, code viewer, endpoints/dependencies tabs)
 ```
@@ -266,6 +351,8 @@ Set in `.env` (see `.env.example`):
 | `RERANK_MODEL` | `rerank-2.5` | |
 | `ALLOW_LOCAL_PATHS` | `true` | Set `false` on any shared deployment |
 | `READ_ONLY` | `false` | Public demo mode: no adding, re-indexing or deleting repositories |
+| `GRAPH_ENABLED` | `true` | Build the code graph while indexing |
+| `GRAPH_TIMEOUT_S` | `600` | Give up on the graph (and keep the rest of the index) after this long |
 
 ## Known limitations
 
@@ -275,4 +362,9 @@ Set in `.env` (see `.env.example`):
   chunked by lines.
 - `tree-sitter` is pinned below 0.26: 0.26.0 segfaults on linux/aarch64 when traversing trees after
   many parses.
+- The code graph finds calls by static analysis. Calls through untyped variables, callbacks or
+  framework wiring can be missing, and calls into libraries end at an external node. It is a simple
+  graph: when one symbol both calls and references another, only one link is kept.
+- graphify is pinned to an exact release (`0.9.95`), since `graph.json` is the contract with it.
+  Its earlier 0.9.8 release missed most calls made through an object or another module.
 - The database is published on host port 5433 to avoid clashing with a locally installed Postgres.

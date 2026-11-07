@@ -107,6 +107,46 @@ CREATE TABLE IF NOT EXISTS embedding_cache (
 -- 'ast' (syntax-aware) or 'lines' (fixed windows; only used as the naive baseline in evaluation)
 ALTER TABLE repos ADD COLUMN IF NOT EXISTS chunking TEXT NOT NULL DEFAULT 'ast';
 
+-- Code graph from graphify (app/ingest/graph.py). Node ids are graphify's, or 'external:<name>'.
+CREATE TABLE IF NOT EXISTS graph_nodes (
+    repo_id    INT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+    node_id    TEXT NOT NULL,
+    label      TEXT NOT NULL,
+    name       TEXT NOT NULL,
+    kind       TEXT NOT NULL,
+    path       TEXT,
+    start_line INT,
+    end_line   INT,
+    community  INT,
+    degree     INT NOT NULL DEFAULT 0,
+    PRIMARY KEY (repo_id, node_id)
+);
+CREATE INDEX IF NOT EXISTS graph_nodes_name_idx ON graph_nodes (repo_id, lower(name));
+CREATE INDEX IF NOT EXISTS graph_nodes_label_idx ON graph_nodes (repo_id, lower(label));
+
+CREATE TABLE IF NOT EXISTS graph_edges (
+    repo_id  INT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+    source   TEXT NOT NULL,
+    target   TEXT NOT NULL,
+    relation TEXT NOT NULL,
+    inferred BOOLEAN NOT NULL DEFAULT false,
+    path     TEXT,
+    line     INT
+);
+CREATE INDEX IF NOT EXISTS graph_edges_source_idx ON graph_edges (repo_id, source);
+CREATE INDEX IF NOT EXISTS graph_edges_target_idx ON graph_edges (repo_id, target);
+
+CREATE TABLE IF NOT EXISTS graph_communities (
+    repo_id   INT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+    community INT NOT NULL,
+    label     TEXT NOT NULL,
+    size      INT NOT NULL,
+    directory TEXT,
+    top_nodes JSONB NOT NULL DEFAULT '[]',
+    links     JSONB NOT NULL DEFAULT '[]',
+    PRIMARY KEY (repo_id, community)
+);
+
 CREATE TABLE IF NOT EXISTS conversations (
     id         UUID PRIMARY KEY,
     repo_id    INT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,

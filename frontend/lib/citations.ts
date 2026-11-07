@@ -20,3 +20,28 @@ export function parseCitationHref(href: string): Source | null {
   if (!match) return null;
   return { path: decodeURIComponent(match[1]), start_line: Number(match[2]), end_line: Number(match[3]) };
 }
+
+export function sourceKey(s: Source): string {
+  return `${s.path}:${s.start_line}-${s.end_line}`;
+}
+
+/** `src/a/b/OwnerController.java:12-30` -> `OwnerController.java:12-30` */
+export function shortSource(s: Source): string {
+  const name = s.path.split("/").pop() ?? s.path;
+  return s.start_line === s.end_line ? `${name}:${s.start_line}` : `${name}:${s.start_line}-${s.end_line}`;
+}
+
+/** Same file and line ranges within `slack` lines of each other. */
+export function sourcesOverlap(a: Source, b: Source, slack = 3): boolean {
+  return a.path === b.path && a.start_line <= b.end_line + slack && b.start_line <= a.end_line + slack;
+}
+
+export function dedupeSources(sources: Source[]): Source[] {
+  const seen = new Set<string>();
+  return sources.filter((s) => {
+    const key = sourceKey(s);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}

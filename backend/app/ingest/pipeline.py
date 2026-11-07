@@ -1,4 +1,5 @@
-"""Indexing pipeline: source -> files -> symbols, imports, endpoints, dependencies, chunks -> embeddings."""
+"""Indexing pipeline: source -> files -> symbols, imports, endpoints, dependencies, chunks -> embeddings,
+plus the code graph (built by graphify while the embeddings are computed)."""
 
 import asyncio
 import hashlib
@@ -16,6 +17,7 @@ from app.db import connection
 from app.ingest.chunker import Chunk, chunk_code, chunk_line_windows, chunk_text
 from app.ingest.dependencies import Dependency, is_manifest, parse_manifest
 from app.ingest.endpoints import Endpoint, extract_endpoints
+from app.ingest.graph import build_code_graph
 from app.ingest.languages import TREE_SITTER_LANGS
 from app.ingest.source import SourceError, clone, extract_zip, is_git_url, local_commit, walk
 from app.ingest.symbols import Symbol, extract_imports, extract_symbols, parse
@@ -182,6 +184,7 @@ async def index_repo(repo_id: int, settings: Settings | None = None, embedder: E
 
     chunking = repo.get("chunking") or "ast"
     replaced_index = False
+    graph_task: asyncio.Task | None = None
     try:
         await _set_status(repo_id, "indexing", progress={"phase": "fetching"}, error=None)
         root, commit_sha = await _resolve_source(repo, settings)
@@ -190,6 +193,9 @@ async def index_repo(repo_id: int, settings: Settings | None = None, embedder: E
         files = await asyncio.to_thread(analyze_tree, root, settings, chunking)
         replaced_index = True
         await _write_metadata(repo_id, files)
+        # The graph is only used by the agent's tools, not by the line-chunked evaluation baseline.
+        if settings.graph_enabled and chunking == "ast":
+            graph_task = asyncio.create_task(build_code_graph(repo_id, root, files, settings))
 
         chunks = [c for f in files for c in f.chunks]
         cache_hits = 0
@@ -202,6 +208,12 @@ async def index_repo(repo_id: int, settings: Settings | None = None, embedder: E
             cache_hits += hits
             await _write_chunks(repo_id, part, vectors)
 
+        graph_stats = None
+        if graph_task is not None:
+            if not graph_task.done():
+                await _set_status(repo_id, "indexing", progress={"phase": "graph"})
+            graph_stats = await graph_task
+
         stats = {
             "files": len(files),
             "chunks": len(chunks),
@@ -213,12 +225,15 @@ async def index_repo(repo_id: int, settings: Settings | None = None, embedder: E
             "embed_model": embedder.model,
             "chunking": chunking,
             "embedding_cache_hits": cache_hits,
+            "graph": graph_stats,
             "seconds": round(time.monotonic() - started, 1),
         }
         await _set_status(repo_id, "ready", progress={"phase": "done"}, stats=stats, commit_sha=commit_sha)
         return stats
     except Exception as exc:
         log.exception("indexing repo %s failed", repo_id)
+        if graph_task is not None and not graph_task.done():
+            graph_task.cancel()
         if repo["stats"] and not replaced_index:
             # Failed before touching the stored index (e.g. the clone failed): keep serving the old one.
             await _set_status(repo_id, "ready", progress={"phase": "done"},

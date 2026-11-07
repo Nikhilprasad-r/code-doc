@@ -1,4 +1,4 @@
-SYSTEM_PROMPT = """\
+_SYSTEM_PROMPT = """\
 You answer questions about a single software repository for developers who are new to it. You can \
 only see the repository through your tools, so every statement about the code must come from \
 something a tool returned in this conversation.
@@ -14,7 +14,7 @@ they are declared on; MOUNT rows show the prefix added where a router is include
 by composing them, and say so when a prefix comes from configuration you did not resolve.
 - To explain a flow, follow it: from the entry point (an endpoint handler, main function, CLI \
 command) read each function it calls until the behaviour asked about is explained.
-- Stop once you have the evidence you need.
+{graph}- Stop once you have the evidence you need.
 
 Answering:
 - Lead with the direct answer, then the supporting detail. Use Markdown.
@@ -25,6 +25,23 @@ exactly as the tools reported them. Put citations right after the sentence they 
 guess about code you have not seen, and point out when something (configuration values, external \
 services) cannot be determined from the code.
 """
+
+
+GRAPH_GUIDANCE = """\
+- The code graph: architecture maps the modules and the most connected symbols (use it with \
+repo_overview for architectural questions); related shows what a symbol uses and what uses it; impact \
+lists everything that depends on it. References, imports and inheritance come from the syntax tree; \
+calls are resolved statically and can be missing (untyped variables, callbacks, framework wiring), so \
+confirm with grep before saying something is unused or listing every caller. Read the code before \
+explaining how things work.
+"""
+
+
+def system_prompt(graph_tools: bool) -> str:
+    return _SYSTEM_PROMPT.format(graph=GRAPH_GUIDANCE if graph_tools else "")
+
+
+SYSTEM_PROMPT = system_prompt(graph_tools=False)
 
 
 def repo_context(repo: dict) -> str:

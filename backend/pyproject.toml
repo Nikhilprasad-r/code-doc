@@ -7,6 +7,10 @@ dependencies = [
     "anthropic>=2.6.0",
     "arq>=0.28.0",
     "fastapi>=0.162.0",
+    # Code graph (app/ingest/graph.py). Exact pin: graph.json is our contract with it and it releases often;
+    # bump deliberately, to a release at least two weeks old, and re-run tests/test_graph.py.
+    "graphifyy==0.9.95",
+    "mcp>=2.3.0",
     "numpy>=2.5.4",
     "pgvector>=0.5.1",
     "psycopg[binary,pool]>=3.3.8",

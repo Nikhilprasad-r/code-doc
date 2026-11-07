@@ -7,7 +7,7 @@ import { Chat } from "@/components/Chat";
 import { CodeViewer } from "@/components/CodeViewer";
 import { RepoDetails } from "@/components/RepoDetails";
 import { RepoSidebar } from "@/components/RepoSidebar";
-import { api, type Health, type Repo, type Source } from "@/lib/api";
+import { api, type Evidence, type Health, type Repo } from "@/lib/api";
 
 export function Workspace() {
   const params = useSearchParams();
@@ -17,7 +17,7 @@ export function Workspace() {
   const [repos, setRepos] = useState<Repo[]>([]);
   const [health, setHealth] = useState<Health | null>(null);
   const [connectionError, setConnectionError] = useState<string | null>(null);
-  const [viewer, setViewer] = useState<Source | null>(null);
+  const [evidence, setEvidence] = useState<Evidence | null>(null);
 
   const refresh = useCallback(
     () =>
@@ -53,7 +53,7 @@ export function Workspace() {
   const selected = repos.find((r) => r.id === repoId) ?? null;
 
   const selectRepo = (id: number) => {
-    setViewer(null);
+    setEvidence(null);
     router.replace(`/?repo=${id}`);
   };
 
@@ -103,16 +103,22 @@ export function Workspace() {
         />
         <main className="flex min-h-0 flex-col border-border lg:border-x">
           {selected ? (
-            <Chat key={selected.id} repo={selected} onOpenSource={setViewer} />
+            <Chat key={selected.id} repo={selected} onEvidence={setEvidence} />
           ) : (
             <EmptyState hasRepos={repos.length > 0} />
           )}
         </main>
         <aside className="hidden min-h-0 flex-col lg:flex">
-          {selected && viewer ? (
-            <CodeViewer repoId={selected.id} source={viewer} onClose={() => setViewer(null)} />
+          {selected && evidence ? (
+            <CodeViewer
+              repoId={selected.id}
+              commit={selected.commit_sha}
+              evidence={evidence}
+              onSelect={(index) => setEvidence({ ...evidence, index })}
+              onClose={() => setEvidence(null)}
+            />
           ) : selected ? (
-            <RepoDetails repo={selected} onOpenSource={setViewer} />
+            <RepoDetails repo={selected} onOpenSource={(source) => setEvidence({ sources: [source], index: 0 })} />
           ) : null}
         </aside>
       </div>
