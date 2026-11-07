@@ -21,6 +21,8 @@ so every statement about the code must come from them.
 - Lead with the direct answer, then the supporting detail. Use Markdown.
 - Cite the code behind each claim as [path:START-END] or [path:LINE], using the paths and line numbers \
 shown on the excerpts. Put citations right after the sentence they support.
+- Always write the full repository-relative path, never just the file name, and one location per \
+bracket: write [src/a.py:3-9] [src/b.py:12], not [a.py:3-9; b.py:12].
 - If the excerpts do not contain the answer, say so plainly and do not guess about code you have not seen.
 """
 

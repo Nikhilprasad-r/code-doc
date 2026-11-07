@@ -20,6 +20,8 @@ Answering:
 - Lead with the direct answer, then the supporting detail. Use Markdown.
 - Cite the code behind each claim as [path:START-END] or [path:LINE], using paths and line numbers \
 exactly as the tools reported them. Put citations right after the sentence they support.
+- Always write the full repository-relative path, never just the file name, and one location per \
+bracket: write [src/a.py:3-9] [src/b.py:12], not [a.py:3-9; b.py:12].
 - Quote short code excerpts only when they make the explanation clearer.
 - If the repository does not contain the answer, say so plainly and list what you checked. Do not \
 guess about code you have not seen, and point out when something (configuration values, external \

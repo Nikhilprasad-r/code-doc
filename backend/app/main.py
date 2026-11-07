@@ -174,10 +174,23 @@ async def list_files(repo_id: int) -> list[dict]:
 
 @app.get("/repos/{repo_id}/file")
 async def get_file(repo_id: int, path: str) -> dict:
+    """A file by its repository-relative path. Models sometimes cite a shortened path (`Visit.java`,
+    `db/mysql/schema.sql`); when exactly one indexed file ends with it, that file is returned, and the
+    response's `path` is the full one."""
+    wanted = path.strip().removeprefix("./").lstrip("/")
+    columns = "SELECT path, language, content, line_count FROM files WHERE repo_id = %s"
     async with connection() as conn:
-        row = await (await conn.execute(
-            "SELECT path, language, content, line_count FROM files WHERE repo_id = %s AND path = %s",
-            [repo_id, path])).fetchone()
+        row = await (await conn.execute(f"{columns} AND path = %s", [repo_id, wanted])).fetchone()
+        if row is None and wanted:
+            suffix = "/" + wanted
+            matches = await (await conn.execute(
+                f"{columns} AND right(path, %s) = %s ORDER BY path LIMIT 4", [repo_id, len(suffix), suffix],
+            )).fetchall()
+            if len(matches) == 1:
+                row = matches[0]
+            elif matches:
+                raise HTTPException(404, f"Several files match {wanted}: "
+                                         + ", ".join(m["path"] for m in matches[:3]))
     if row is None:
         raise HTTPException(404, "File not found")
     return row

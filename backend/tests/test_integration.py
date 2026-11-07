@@ -1,9 +1,11 @@
 """End-to-end indexing and search against a real Postgres (docker compose up -d db)."""
 
+import httpx
 import pytest
 
 from app.db import connection
 from app.ingest.pipeline import index_repo
+from app.main import app
 from app.retrieval.embeddings import NoopReranker
 from app.retrieval.search import hybrid_search
 
@@ -86,3 +88,30 @@ async def test_failed_reindex_before_writing_keeps_serving_previous_index(indexe
     finally:
         async with connection() as conn:
             await conn.execute("DELETE FROM repos WHERE id = %s", [row["id"]])
+
+
+async def test_file_endpoint_resolves_shortened_paths(indexed_repo):
+    """Models sometimes cite `items.py` or `routes/items.py`; a unique suffix match opens the full path."""
+    repo_id, _, _ = indexed_repo
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        async def fetch(path: str) -> httpx.Response:
+            return await client.get(f"/repos/{repo_id}/file", params={"path": path})
+
+        exact = await fetch("api/routes/items.py")
+        assert exact.status_code == 200 and exact.json()["path"] == "api/routes/items.py"
+        for shortened in ("items.py", "routes/items.py", "./api/routes/items.py"):
+            response = await fetch(shortened)
+            assert response.status_code == 200 and response.json()["path"] == "api/routes/items.py", shortened
+        assert (await fetch("tems.py")).status_code == 404  # a suffix must start at a path segment
+        assert (await fetch("nope.py")).status_code == 404
+
+        async with connection() as conn:
+            await conn.execute(
+                "INSERT INTO files (repo_id, path, language, content, content_hash, line_count) "
+                "VALUES (%s, 'other/items.py', 'python', 'x = 1', 'h', 1)", [repo_id])
+        try:
+            ambiguous = await fetch("items.py")
+            assert ambiguous.status_code == 404 and "Several files match items.py" in ambiguous.json()["detail"]
+        finally:
+            async with connection() as conn:
+                await conn.execute("DELETE FROM files WHERE repo_id = %s AND path = 'other/items.py'", [repo_id])

@@ -22,7 +22,7 @@ export function formatMs(ms: number | null | undefined): string {
 export function formatCost(usd: number | null | undefined): string {
   if (usd === null || usd === undefined) return "–";
   if (usd === 0) return "$0";
-  if (usd < 0.01) return `$${usd.toPrecision(2)}`;
+  if (usd < 0.01) return `$${Number(usd.toPrecision(2))}`;
   return `$${usd.toFixed(2)}`;
 }
 

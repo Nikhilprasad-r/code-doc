@@ -20,7 +20,8 @@ interface Props {
  */
 export function CodeViewer({ repoId, commit, evidence, onSelect, onClose }: Props) {
   const source = evidence.sources[Math.min(evidence.index, evidence.sources.length - 1)];
-  const [file, setFile] = useState<FileContent | null>(null);
+  // Keyed by the cited path: a shortened citation (`Visit.java`) comes back with the file's full path.
+  const [loaded, setLoaded] = useState<{ cited: string; file: FileContent } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const focusLine = useRef<HTMLDivElement>(null);
   const firstLoad = useRef(true);
@@ -31,7 +32,7 @@ export function CodeViewer({ repoId, commit, evidence, onSelect, onClose }: Prop
       .file(repoId, source.path, commit)
       .then((f) => {
         if (cancelled) return;
-        setFile(f);
+        setLoaded({ cited: source.path, file: f });
         setError(null);
       })
       .catch((e) => !cancelled && setError(e instanceof Error ? e.message : String(e)));
@@ -40,13 +41,15 @@ export function CodeViewer({ repoId, commit, evidence, onSelect, onClose }: Prop
     };
   }, [repoId, commit, source.path]);
 
+  const file = loaded && loaded.cited === source.path ? loaded.file : null;
+
   useEffect(() => {
-    if (!file || file.path !== source.path) return;
+    if (!file) return;
     focusLine.current?.scrollIntoView({ block: "center", behavior: firstLoad.current ? "auto" : "smooth" });
     firstLoad.current = false;
   }, [file, source.path, source.start_line, source.end_line]);
 
-  const lines = file && file.path === source.path ? file.content.split("\n") : [];
+  const lines = file ? file.content.split("\n") : [];
   const width = String(lines.length).length;
   const sameFile = evidence.sources.filter((s) => s.path === source.path);
   const inRange = (n: number, s: { start_line: number; end_line: number }) => n >= s.start_line && n <= s.end_line;
@@ -91,10 +94,11 @@ export function CodeViewer({ repoId, commit, evidence, onSelect, onClose }: Prop
             ))}
           </div>
         )}
-        <p className="truncate font-mono text-[11px] text-muted" title={source.path}>
-          {source.path} · lines {source.start_line}
+        <p className="truncate font-mono text-[11px] text-muted" title={file?.path ?? source.path}>
+          {file?.path ?? source.path} · lines {source.start_line}
           {source.end_line !== source.start_line ? `–${source.end_line}` : ""}
-          {file?.path === source.path ? ` of ${file.line_count}` : ""}
+          {file ? ` of ${file.line_count}` : ""}
+          {file && file.path !== source.path ? ` (cited as ${source.path})` : ""}
         </p>
       </div>
       {error && <p className="p-3 text-sm text-danger">{error}</p>}

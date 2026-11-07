@@ -1,15 +1,25 @@
 import type { Source } from "./api";
 
-// [path/to/file.ext:12-30] or [path/to/file.ext:12], not already followed by a (link).
-const CITATION = /\[([A-Za-z0-9_.@+\-/]+\.[A-Za-z0-9]+|[A-Za-z0-9_.@+\-/]*(?:Dockerfile|Makefile|README)):(\d+)(?:-(\d+))?\](?!\()/g;
+// A bracket not already followed by a (link): [path/to/file.ext:12-30], [path:12], or several of them
+// separated by commas or semicolons, as models sometimes merge them (the eval's grader reads them the same way).
+const BRACKET = /\[([^[\]\n]{3,400})\](?!\()/g;
+// One location: a path with an extension (or Dockerfile/Makefile/README), a line, an optional end line.
+const REF = /^\s*`?([A-Za-z0-9_.@+\-/]+\.[A-Za-z0-9]+|[A-Za-z0-9_.@+\-/]*(?:Dockerfile|Makefile|README)):(\d+)(?:\s*[-–]\s*(\d+))?`?\s*$/;
 
 export const CITE_PREFIX = "#cite=";
 
-/** Turn plain-text citations into Markdown links the renderer can intercept. */
+function citationLink(path: string, start: string, end?: string): string {
+  const label = end ? `${path}:${start}-${end}` : `${path}:${start}`;
+  return `[${label}](${CITE_PREFIX}${encodeURIComponent(path)}:${start}-${end ?? start})`;
+}
+
+/** Turn plain-text citations into Markdown links the renderer can intercept. A bracket holding several
+ * locations becomes one link per location; a bracket with anything else in it is left alone. */
 export function linkCitations(markdown: string): string {
-  return markdown.replace(CITATION, (_match, path: string, start: string, end?: string) => {
-    const label = end ? `${path}:${start}-${end}` : `${path}:${start}`;
-    return `[${label}](${CITE_PREFIX}${encodeURIComponent(path)}:${start}-${end ?? start})`;
+  return markdown.replace(BRACKET, (whole, inner: string) => {
+    const refs = inner.split(/[,;]/).map((part) => REF.exec(part));
+    if (refs.some((ref) => ref === null)) return whole;
+    return refs.map((ref) => citationLink(ref![1].replace(/^\.\//, ""), ref![2], ref![3])).join(" ");
   });
 }
 
