@@ -6,15 +6,18 @@ streaming the API no longer validates tool arguments itself.
 """
 
 import fnmatch
+import json
 import re
 from collections import Counter, defaultdict
 from typing import Any
 
+from opentelemetry.trace import Status, StatusCode
 from pydantic import BaseModel, Field, ValidationError
 
 from app.agent import graph_tools
 from app.agent.toolbase import MAX_OUTPUT_CHARS, Args, ToolContext, ToolOutput
 from app.db import connection
+from app.observability.tracing import tracer
 from app.retrieval.search import hybrid_search
 
 __all__ = ["GRAPH_TOOL_NAMES", "MAX_OUTPUT_CHARS", "TOOLS", "ToolContext", "ToolOutput", "has_graph",
@@ -373,6 +376,19 @@ _HANDLERS = {
 
 
 async def run_tool(ctx: ToolContext, name: str, raw_input: Any) -> ToolOutput:
+    """Validate the arguments and run one tool, in an `execute_tool <name>` span."""
+    with tracer.start_as_current_span(f"execute_tool {name}", attributes={
+            "gen_ai.operation.name": "execute_tool", "gen_ai.tool.name": name, "codedoc.repo_id": ctx.repo_id,
+            "codedoc.tool.args": json.dumps(raw_input, default=str)[:500]}) as span:
+        output = await _run_tool(ctx, name, raw_input)
+        span.set_attributes({"codedoc.tool.is_error": output.is_error, "codedoc.tool.output_chars": len(output.text),
+                             "codedoc.tool.sources": len(output.sources)})
+        if output.is_error:
+            span.set_status(Status(StatusCode.ERROR, output.text[:200]))
+        return output
+
+
+async def _run_tool(ctx: ToolContext, name: str, raw_input: Any) -> ToolOutput:
     model = ARG_MODELS.get(name)
     if model is None:
         return ToolOutput(f"Unknown tool: {name}", is_error=True)

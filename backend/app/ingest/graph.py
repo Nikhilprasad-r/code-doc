@@ -34,8 +34,11 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Protocol
 
+from opentelemetry.trace import Status, StatusCode
+
 from app.config import Settings
 from app.db import connection
+from app.observability.tracing import tracer
 
 log = logging.getLogger(__name__)
 
@@ -316,6 +319,16 @@ async def build_code_graph(repo_id: int, root: Path, files: list, settings: Sett
     """Run graphify on the checkout and store the result. Never raises: the code graph is an extra, so
     a failure is recorded in the stats and indexing carries on without it."""
     started = time.monotonic()
+    with tracer.start_as_current_span("index.graph", attributes={"codedoc.repo_id": repo_id}) as span:
+        stats = await _build_code_graph(repo_id, root, files, settings, started)
+        span.set_attributes({f"codedoc.graph.{k}": v for k, v in stats.items() if isinstance(v, (int, float))})
+        if "error" in stats:
+            span.set_status(Status(StatusCode.ERROR, stats["error"]))
+        log.info("index.phase", extra={"repo_id": repo_id, "phase": "graph", **stats})
+        return stats
+
+
+async def _build_code_graph(repo_id: int, root: Path, files: list, settings: Settings, started: float) -> dict:
     try:
         data = await run_graphify(root, settings.data_dir / "graphs" / str(repo_id), settings.graph_timeout_s)
         graph = await asyncio.to_thread(

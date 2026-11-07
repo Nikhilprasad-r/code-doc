@@ -20,6 +20,7 @@ import { useState } from "react";
 
 import type { Source } from "@/lib/api";
 import { dedupeSources, shortSource, sourcesOverlap } from "@/lib/citations";
+import { formatMs } from "@/lib/format";
 
 export interface ToolStep {
   name: string;
@@ -27,6 +28,8 @@ export interface ToolStep {
   summary?: string;
   sources: Source[];
   isError?: boolean;
+  /** How long the tool took on the server. */
+  ms?: number;
   done: boolean;
 }
 
@@ -165,7 +168,14 @@ export function InvestigationTrail({ steps, investigating, linkedSources, onHove
       </ol>
       {selected && (
         <div className="trail-in mt-2 rounded-md border border-border bg-panel px-3 py-2">
-          {selected.summary && <p className="text-muted">{selected.summary}</p>}
+          {(selected.summary || selected.ms !== undefined) && (
+            <p className="text-muted">
+              {selected.summary}
+              {selected.ms !== undefined && (
+                <span className="ml-2 tabular-nums text-muted/80">{formatMs(selected.ms)}</span>
+              )}
+            </p>
+          )}
           {selected.sources.length > 0 && (
             <div className="mt-1.5 flex flex-wrap gap-1">
               {dedupeSources(selected.sources)

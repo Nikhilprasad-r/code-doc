@@ -1,0 +1,28 @@
+# Tracing for the stack: Jaeger plus the settings that make the api and worker send OpenTelemetry spans to it.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.observability.yml up -d
+#
+# Jaeger UI: http://localhost:16686 (services codedoc-api and codedoc-worker). Spans are kept in memory, so a
+# Jaeger restart clears them. Without this file, tracing stays off and nothing else changes.
+services:
+  jaeger:
+    image: jaegertracing/jaeger:2.22.0
+    ports:
+      - "16686:16686"  # UI
+      - "4318:4318"    # OTLP over HTTP, so a backend run outside Docker can send spans too
+
+  api:
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+      OTEL_SERVICE_NAME: codedoc-api
+    depends_on:
+      jaeger:
+        condition: service_started
+
+  worker:
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+      OTEL_SERVICE_NAME: codedoc-worker
+    depends_on:
+      jaeger:
+        condition: service_started

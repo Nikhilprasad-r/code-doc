@@ -1,5 +1,6 @@
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -38,6 +39,12 @@ class Settings(BaseSettings):
     allow_local_paths: bool = True
     # Public demo mode: no adding, re-indexing or deleting repositories.
     read_only: bool = False
+
+    # Observability. Logs go to stderr; tracing turns on when OTEL_EXPORTER_OTLP_ENDPOINT is set (app/observability).
+    log_format: Literal["json", "text"] = "json"
+    log_level: str = "INFO"
+    # Store each question and answer in answer_runs (metrics are recorded either way).
+    record_answer_text: bool = True
 
     # MCP over HTTP (/mcp): requests must carry one of these Host / Origin values (DNS-rebinding protection).
     mcp_allowed_hosts: list[str] = ["localhost:*", "127.0.0.1:*", "[::1]:*"]

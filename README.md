@@ -27,6 +27,7 @@ everything except chat works.
 | worker | – | arq worker that runs indexing jobs |
 | db | localhost:5433 | Postgres 17 + pgvector (all indexes) |
 | redis | localhost:6379 | job queue |
+| jaeger (optional) | <http://localhost:16686> | trace viewer, with `docker-compose.observability.yml` (see [Observability](#observability)) |
 
 ## How it works
 
@@ -137,6 +138,8 @@ and the UI is built around those citations:
   cite code.
 - **Cross-highlighting.** Hovering a claim lights up the trail steps that found its evidence;
   hovering a step outlines the claims it supports.
+- **Answer footer.** Each answer ends with what it took: model, tool calls, total time and time to the
+  first words, and cost (token counts on hover).
 
 The system prompt and tool definitions are prompt-cached, so each step of the agent loop re-reads
 the growing conversation from cache. Server-side refusal fallback is enabled for models that support it.
@@ -190,7 +193,7 @@ an HTML report is built from them.
 **Harness checks.** An oracle (the gold facts with gold citations) and a null (empty answer) are run
 through the same runner and graders. The null scores 0 on every metric, except `cite_valid` on the 4
 "isn't there" questions, where citing nothing is correct. The oracle scores 1.00 on every
-programmatically graded metric, which also confirms that all 95 gold locations resolve in the index.
+programmatically graded metric, which also confirms that all 84 gold locations resolve in the index.
 `evals.run judge-check` verifies that the judge gives 0 to an empty answer, "I don't know", and an
 off-topic answer, and full marks to the oracle answer.
 
@@ -277,6 +280,66 @@ The HTTP endpoint has no authentication, like the rest of the API. It only accep
 `MCP_ALLOWED_ORIGINS` (JSON lists) only behind your own auth. `READ_ONLY=true` disables
 `index_repository`, and `ALLOW_LOCAL_PATHS=false` limits it to git URLs.
 
+## Observability
+
+Every answer, request and indexing job is recorded three ways.
+
+**The answer log.** Each answer, from the web chat or MCP `ask_codebase`, is stored as a row in the
+`answer_runs` table ([app/observability/answers.py](backend/app/observability/answers.py)). The row records:
+- source, repository, the models that served it, and status (`ok`, `error`, `refused`, `cut_off`, `cancelled`) with any error,
+- total time and time to the first words,
+- Claude calls and tokens by type, and cost (from [app/pricing.py](backend/app/pricing.py), which the eval also uses),
+- each tool call with its arguments, duration, result and error,
+- the trace ID.
+
+The question and answer text are stored too, unless `RECORD_ANSWER_TEXT=false`.
+
+| Endpoint | Returns |
+|---|---|
+| `GET /stats?repo_id=&days=7` | answers by status; p50/p95 latency and time to first words; tokens and spend; spend by model; calls, error rate and p50/p95 time per tool; a daily series |
+| `GET /answers?repo_id=&limit=50` | recent answers |
+| `GET /answers/{id}` | one answer, with its full tool and Claude-call timeline |
+
+The repository panel's **Usage** tab shows the same numbers for the last 7 days. The **Overview** tab
+shows how long each indexing phase took.
+
+**Structured logs.** The api, worker and MCP server write one JSON object per line to stderr
+(`LOG_FORMAT=text` for readable lines when developing locally). Every line carries `request_id`,
+plus `trace_id` when tracing is on. The api returns the request ID as an `X-Request-ID` header, and
+reuses one sent by the caller.
+- `http.request`: one per request, with method, path, status and duration. The duration covers
+  the whole stream for chat.
+- `answer.finished`: one per answer, with status, model, latency, tokens, tool calls and cost.
+- `index.phase` / `index.finished`: per indexing phase, with seconds.
+- `mcp.tool`: one per MCP code-tool call.
+
+```bash
+docker compose logs api | grep answer.finished
+```
+
+**Tracing** with OpenTelemetry (standard GenAI attribute names), off unless an OTLP endpoint is set.
+The override file adds Jaeger and points the api and worker at it:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.observability.yml up -d
+```
+
+Open <http://localhost:16686> and pick `codedoc-api` or `codedoc-worker`.
+- **An answer** is a `POST /chat` trace: `answer` → one `chat <model>` span per Claude call (tokens
+  including cache reads, finish reason, time to first output) and one `execute_tool <name>` span per
+  tool call (with search stages under `search_code`). Under each Claude call, the Anthropic SDK adds
+  its own `anthropic.messages.create` span with the API request ID.
+- **An indexing job** is an `index_repo` trace with `index.fetch`, `parse`, `write`, `embed` and
+  `graph` spans.
+- **Privacy:** our spans never contain prompt or answer text, and no span records the API key.
+  - The SDK's span records metadata only: model, tokens, request ID, and your Anthropic organization
+    and workspace IDs.
+  - The SDK also sends a `traceparent` header to the API.
+  - `ANTHROPIC_OPEN_TELEMETRY=false` turns the SDK's tracing off. Leave
+    `ANTHROPIC_OPEN_TELEMETRY_TRACES_CONTENT_MODE` unset, or the SDK records message content.
+
+Any OTLP backend works in place of Jaeger: set `OTEL_EXPORTER_OTLP_ENDPOINT`.
+
 ## Scaling path
 
 What is built for single repositories up to roughly 500k lines, and what changes beyond that:
@@ -296,6 +359,9 @@ What is built for single repositories up to roughly 500k lines, and what changes
   including calls into dependencies.
 - **Many repositories / tenants.** Per-organisation isolation, auth, and cross-repo search
   (linking an HTTP client call to the endpoint in another service).
+- **Operations.** Metrics and dashboards (OpenTelemetry metrics into Prometheus/Grafana), error
+  tracking (Sentry), and alerts on error rate, latency and daily spend. Log shipping, plus retention or
+  monthly partitions for `answer_runs`. A persistent trace store in place of Jaeger's in-memory one.
 
 ## Development
 
@@ -332,9 +398,11 @@ backend/app/
   ingest/      source handling, chunker, symbols, endpoints, dependencies, code graph, pipeline
   retrieval/   tokenizer, embeddings + reranker, hybrid search
   agent/       tools (+ graph tools), system prompt, streaming agent loop, single-call RAG mode
+  observability/  JSON logs + request IDs, answer log, /stats queries, OpenTelemetry tracing
+  pricing.py   $/MTok per model (answers and evals)
   main.py      HTTP API (+ MCP at /mcp)   mcp_server.py  MCP server   worker.py  arq worker
 backend/tests/ unit + integration tests, multi-framework fixture repo
-frontend/      Next.js UI (repo list, chat, code viewer, endpoints/dependencies tabs)
+frontend/      Next.js UI (repo list, chat, code viewer, endpoints/dependencies/usage tabs)
 ```
 
 ### Configuration
@@ -353,6 +421,10 @@ Set in `.env` (see `.env.example`):
 | `READ_ONLY` | `false` | Public demo mode: no adding, re-indexing or deleting repositories |
 | `GRAPH_ENABLED` | `true` | Build the code graph while indexing |
 | `GRAPH_TIMEOUT_S` | `600` | Give up on the graph (and keep the rest of the index) after this long |
+| `LOG_FORMAT` / `LOG_LEVEL` | `json` / `INFO` | `text` for readable local logs |
+| `RECORD_ANSWER_TEXT` | `true` | Store questions and answers in `answer_runs` (metrics are recorded either way) |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | – | Turns tracing on, e.g. `http://localhost:4318`; set by the observability override |
+| `OTEL_SERVICE_NAME` | `codedoc-api` / `-worker` / `-mcp` | Service name in the trace viewer |
 
 ## Known limitations
 

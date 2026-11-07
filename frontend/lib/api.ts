@@ -14,6 +14,8 @@ export interface RepoStats {
   seconds?: number;
   /** Code graph from graphify, or the reason it could not be built. */
   graph?: { nodes?: number; edges?: number; communities?: number; error?: string } | null;
+  /** Seconds per indexing phase: fetch, parse, write, embed, graph. */
+  timings?: Record<string, number>;
 }
 
 export interface Repo {
@@ -72,6 +74,65 @@ export interface Health {
   offline_embeddings: boolean;
   agent_model: string;
   read_only: boolean;
+  tracing?: boolean;
+}
+
+/** The final event of an answer: what it used and what it cost. */
+export interface AnswerMetrics {
+  usage: Record<string, number>;
+  model?: string | null;
+  models?: string[];
+  stop_reason?: string | null;
+  tool_calls?: number;
+  latency_ms?: number;
+  ttft_ms?: number | null;
+  cost_usd?: number | null;
+}
+
+export type AnswerStatus = "ok" | "error" | "refused" | "cut_off" | "cancelled";
+
+/** One row of GET /answers. */
+export interface AnswerRun {
+  id: number;
+  created_at: string;
+  source: "web" | "mcp";
+  repo_id: number;
+  mode: "agent" | "rag";
+  question: string | null;
+  status: AnswerStatus;
+  error: string | null;
+  model: string;
+  latency_ms: number | null;
+  ttft_ms: number | null;
+  steps: number;
+  tool_calls: number;
+  tool_errors: number;
+  cost_usd: number | null;
+}
+
+/** GET /stats: the answer log aggregated over the last `days` days. */
+export interface AnswerStats {
+  days: number;
+  answers: number;
+  ok: number;
+  errors: number;
+  refused: number;
+  cut_off: number;
+  cancelled: number;
+  latency_p50_ms: number | null;
+  latency_p95_ms: number | null;
+  ttft_p50_ms: number | null;
+  ttft_p95_ms: number | null;
+  avg_tool_calls: number | null;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  cost_usd: number;
+  unpriced: number;
+  by_model: { model: string; answers: number; cost_usd: number; latency_p50_ms: number | null }[];
+  tools: { name: string; calls: number; errors: number; error_rate: number; p50_ms: number | null; p95_ms: number | null }[];
+  per_day: { day: string; answers: number; not_ok: number; cost_usd: number }[];
 }
 
 export type ChatEvent =
@@ -86,10 +147,11 @@ export type ChatEvent =
       summary: string;
       sources: Source[];
       is_error: boolean;
+      ms?: number;
     }
   | { type: "notice"; message: string }
   | { type: "error"; message: string }
-  | { type: "done"; usage: Record<string, number> };
+  | ({ type: "done" } & AnswerMetrics);
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_URL}${path}`, init);
@@ -135,6 +197,8 @@ export const api = {
   },
   endpoints: (id: number) => request<EndpointRow[]>(`/repos/${id}/endpoints`),
   dependencies: (id: number) => request<DependencyRow[]>(`/repos/${id}/dependencies`),
+  stats: (repoId: number, days = 7) => request<AnswerStats>(`/stats?repo_id=${repoId}&days=${days}`),
+  answers: (repoId: number, limit = 20) => request<AnswerRun[]>(`/answers?repo_id=${repoId}&limit=${limit}`),
 };
 
 /** POST /chat and yield server-sent events as they arrive. */

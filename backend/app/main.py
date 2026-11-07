@@ -11,7 +11,7 @@ from typing import Literal
 import anthropic
 from arq import ArqRedis, create_pool
 from arq.connections import RedisSettings
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from mcp.server.transport_security import TransportSecuritySettings
@@ -24,11 +24,17 @@ from app.db import close_db, connection, init_db
 from app.ingest.pipeline import UPLOAD_PREFIX, index_repo
 from app.ingest.source import repo_name
 from app.mcp_server import server as mcp_server
+from app.observability.answers import observe_answer
+from app.observability.logs import RequestLogMiddleware, configure_logging
+from app.observability.stats import answer_stats, get_answer, recent_answers
+from app.observability.tracing import instrument_app, setup_tracing, shutdown_tracing, tracing_enabled
 from app.retrieval.embeddings import get_embedder, get_reranker
 from app.retrieval.search import hybrid_search
 
 log = logging.getLogger("codedoc")
 settings = get_settings()
+configure_logging(settings)  # after uvicorn's own logging setup, so its lines come out in our format too
+setup_tracing("codedoc-api")  # no-op unless OTEL_EXPORTER_OTLP_ENDPOINT is set
 _background: set[asyncio.Task] = set()
 
 # The MCP server over streamable HTTP at /mcp. Created here so its session manager exists for the lifespan.
@@ -57,10 +63,15 @@ async def lifespan(app: FastAPI):
     if app.state.arq is not None:
         await app.state.arq.close()
     await close_db()
+    shutdown_tracing()
 
 
 app = FastAPI(title="Code Documentation Assistant", lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins, allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins, allow_methods=["*"], allow_headers=["*"],
+                   expose_headers=["X-Request-ID"])
+app.add_middleware(RequestLogMiddleware)  # added last, so it is outermost and times the whole request
+if tracing_enabled():
+    instrument_app(app)
 
 
 # --- repositories ------------------------------------------------------------------------------
@@ -95,7 +106,7 @@ async def _get_repo(repo_id: int) -> dict:
 @app.get("/health")
 async def health() -> dict:
     return {"ok": True, "offline_embeddings": settings.offline_embeddings, "agent_model": settings.agent_model,
-            "read_only": settings.read_only}
+            "read_only": settings.read_only, "tracing": tracing_enabled()}
 
 
 @app.get("/repos")
@@ -239,8 +250,12 @@ async def _chat_events(body: ChatRequest, repo: dict) -> AsyncIterator[str]:
     yield _sse({"type": "conversation", "id": str(conversation_id)})
     agent = body.mode == "agent"
     history = await _load_history(conversation_id, repo["id"]) if agent else []
+    events = observe_answer(
+        answer_question(body.message, repo, mode=body.mode, history=history, settings=settings),
+        source="web", repo=repo, question=body.message, mode=body.mode, settings=settings,
+        conversation_id=str(conversation_id) if agent else None)
     try:
-        async for event in answer_question(body.message, repo, mode=body.mode, history=history, settings=settings):
+        async for event in events:
             if event["type"] == "_messages" and agent:
                 await _save_history(conversation_id, repo["id"], event["messages"])
             if event["type"].startswith("_"):
@@ -273,6 +288,27 @@ async def chat(body: ChatRequest) -> StreamingResponse:
         raise HTTPException(409, f"Repository is {repo['status']}, not ready")
     return StreamingResponse(_chat_events(body, repo), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+# --- observability ---------------------------------------------------------------------------
+
+@app.get("/stats")
+async def stats(repo_id: int | None = None, days: int = Query(7, ge=1, le=365)) -> dict:
+    """Answers, latency percentiles, tokens and spend, by model and by tool, over the last `days` days."""
+    return await answer_stats(repo_id, days)
+
+
+@app.get("/answers")
+async def answers(repo_id: int | None = None, limit: int = Query(50, ge=1, le=500)) -> list[dict]:
+    return await recent_answers(repo_id, limit)
+
+
+@app.get("/answers/{answer_id}")
+async def answer_detail(answer_id: int) -> dict:
+    row = await get_answer(answer_id)
+    if row is None:
+        raise HTTPException(404, "Answer not found")
+    return row
 
 
 # Mounted last so every API route above takes precedence; the MCP app only answers /mcp.

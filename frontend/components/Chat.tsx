@@ -4,7 +4,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { AnswerView, type ActivationVia } from "@/components/AnswerView";
 import { InvestigationTrail, type ToolStep } from "@/components/InvestigationTrail";
-import { streamChat, type Evidence, type Repo, type Source } from "@/lib/api";
+import { streamChat, type AnswerMetrics, type Evidence, type Repo, type Source } from "@/lib/api";
+import { formatCost, formatMs, modelLabel } from "@/lib/format";
 
 interface Message {
   role: "user" | "assistant";
@@ -12,7 +13,7 @@ interface Message {
   steps: ToolStep[];
   notices: string[];
   error?: string;
-  usage?: Record<string, number>;
+  metrics?: AnswerMetrics;
   pending?: boolean;
 }
 
@@ -102,6 +103,7 @@ export function Chat({ repo, onEvidence }: Props) {
                 summary: event.summary,
                 sources: event.sources,
                 isError: event.is_error,
+                ms: event.ms,
                 done: true,
               };
               if (index === -1) steps.push(step);
@@ -115,9 +117,20 @@ export function Chat({ repo, onEvidence }: Props) {
           case "error":
             updateLast((m) => ({ ...m, error: event.message }));
             break;
-          case "done":
-            updateLast((m) => ({ ...m, usage: event.usage }));
+          case "done": {
+            const metrics: AnswerMetrics = {
+              usage: event.usage,
+              model: event.model,
+              models: event.models,
+              stop_reason: event.stop_reason,
+              tool_calls: event.tool_calls,
+              latency_ms: event.latency_ms,
+              ttft_ms: event.ttft_ms,
+              cost_usd: event.cost_usd,
+            };
+            updateLast((m) => ({ ...m, metrics }));
             break;
+          }
         }
       }
     } catch (error) {
@@ -297,15 +310,32 @@ function AssistantMessage({ index, message, activeKey, hovered, scrollRoot, onAc
       {message.error && (
         <p className="rounded-md border border-danger/40 px-3 py-2 text-sm text-danger">{message.error}</p>
       )}
-      {message.usage && !message.pending && (
-        <p className="pl-8 text-[11px] text-muted">
-          {(message.usage.input_tokens ?? 0) +
-            (message.usage.cache_read_input_tokens ?? 0) +
-            (message.usage.cache_creation_input_tokens ?? 0)}{" "}
-          input tokens ({message.usage.cache_read_input_tokens ?? 0} from cache) · {message.usage.output_tokens ?? 0}{" "}
-          output tokens
-        </p>
-      )}
+      {message.metrics && !message.pending && <AnswerFooter metrics={message.metrics} />}
     </div>
+  );
+}
+
+/** "Haiku 5.5 · 5 tools · 6.1 s (first words 1.2 s) · $0.0015", with the token breakdown on hover. */
+function AnswerFooter({ metrics }: { metrics: AnswerMetrics }) {
+  const usage = metrics.usage ?? {};
+  const cached = usage.cache_read_input_tokens ?? 0;
+  const input = (usage.input_tokens ?? 0) + cached + (usage.cache_creation_input_tokens ?? 0);
+  const tools = metrics.tool_calls ?? 0;
+  const parts = [
+    modelLabel(metrics.model),
+    `${tools} ${tools === 1 ? "tool" : "tools"}`,
+    metrics.latency_ms !== undefined &&
+      `${formatMs(metrics.latency_ms)}${metrics.ttft_ms ? ` (first words ${formatMs(metrics.ttft_ms)})` : ""}`,
+    metrics.cost_usd !== undefined && metrics.cost_usd !== null && formatCost(metrics.cost_usd),
+  ].filter(Boolean);
+  return (
+    <p
+      className="pl-8 text-[11px] tabular-nums text-muted"
+      title={`${input.toLocaleString()} input tokens (${cached.toLocaleString()} from cache) · ${(
+        usage.output_tokens ?? 0
+      ).toLocaleString()} output tokens`}
+    >
+      {parts.join(" · ")}
+    </p>
   );
 }

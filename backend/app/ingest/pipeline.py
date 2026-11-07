@@ -1,5 +1,9 @@
 """Indexing pipeline: source -> files -> symbols, imports, endpoints, dependencies, chunks -> embeddings,
-plus the code graph (built by graphify while the embeddings are computed)."""
+plus the code graph (built by graphify while the embeddings are computed).
+
+Each job runs in an `index_repo` span with one `index.<phase>` span per phase (fetch, parse, write, embed,
+graph), logs one `index.phase` line per phase, and stores the phase durations in `stats.timings`.
+"""
 
 import asyncio
 import hashlib
@@ -7,6 +11,8 @@ import json
 import logging
 import time
 from collections import Counter
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -21,6 +27,7 @@ from app.ingest.graph import build_code_graph
 from app.ingest.languages import TREE_SITTER_LANGS
 from app.ingest.source import SourceError, clone, extract_zip, is_git_url, local_commit, walk
 from app.ingest.symbols import Symbol, extract_imports, extract_symbols, parse
+from app.observability.tracing import tracer
 from app.retrieval.embeddings import Embedder, get_embedder
 from app.retrieval.tokenize import build_search_text
 
@@ -173,7 +180,24 @@ async def _write_chunks(repo_id: int, chunks: list[Chunk], vectors: list[np.ndar
         )
 
 
+@contextmanager
+def _phase(name: str, repo_id: int, timings: dict) -> Iterator:
+    started = time.monotonic()
+    with tracer.start_as_current_span(f"index.{name}", attributes={"codedoc.repo_id": repo_id}) as span:
+        yield span
+    timings[name] = round(time.monotonic() - started, 2)
+    log.info("index.phase", extra={"repo_id": repo_id, "phase": name, "seconds": timings[name]})
+
+
 async def index_repo(repo_id: int, settings: Settings | None = None, embedder: Embedder | None = None) -> dict:
+    with tracer.start_as_current_span("index_repo", attributes={"codedoc.repo_id": repo_id}) as span:
+        stats = await _index_repo(repo_id, settings, embedder, span)
+        span.set_attributes({"codedoc.files": stats["files"], "codedoc.chunks": stats["chunks"],
+                             "codedoc.embedding_cache_hits": stats["embedding_cache_hits"]})
+        return stats
+
+
+async def _index_repo(repo_id: int, settings: Settings | None, embedder: Embedder | None, span) -> dict:
     settings = settings or get_settings()
     embedder = embedder or get_embedder(settings)
     started = time.monotonic()
@@ -183,16 +207,22 @@ async def index_repo(repo_id: int, settings: Settings | None = None, embedder: E
         raise ValueError(f"repo {repo_id} not found")
 
     chunking = repo.get("chunking") or "ast"
+    span.set_attributes({"codedoc.repo": repo["name"], "codedoc.chunking": chunking})
     replaced_index = False
     graph_task: asyncio.Task | None = None
+    timings: dict[str, float] = {}
     try:
         await _set_status(repo_id, "indexing", progress={"phase": "fetching"}, error=None)
-        root, commit_sha = await _resolve_source(repo, settings)
+        with _phase("fetch", repo_id, timings):
+            root, commit_sha = await _resolve_source(repo, settings)
 
         await _set_status(repo_id, "indexing", progress={"phase": "parsing"})
-        files = await asyncio.to_thread(analyze_tree, root, settings, chunking)
+        with _phase("parse", repo_id, timings) as phase:
+            files = await asyncio.to_thread(analyze_tree, root, settings, chunking)
+            phase.set_attribute("codedoc.files", len(files))
         replaced_index = True
-        await _write_metadata(repo_id, files)
+        with _phase("write", repo_id, timings):
+            await _write_metadata(repo_id, files)
         # The graph is only used by the agent's tools, not by the line-chunked evaluation baseline.
         if settings.graph_enabled and chunking == "ast":
             graph_task = asyncio.create_task(build_code_graph(repo_id, root, files, settings))
@@ -200,19 +230,24 @@ async def index_repo(repo_id: int, settings: Settings | None = None, embedder: E
         chunks = [c for f in files for c in f.chunks]
         cache_hits = 0
         batch = settings.embed_batch_size
-        for start in range(0, len(chunks), batch):
-            await _set_status(repo_id, "indexing",
-                              progress={"phase": "embedding", "done": start, "total": len(chunks)})
-            part = chunks[start:start + batch]
-            vectors, hits = await _embed_with_cache(embedder, part)
-            cache_hits += hits
-            await _write_chunks(repo_id, part, vectors)
+        with _phase("embed", repo_id, timings) as phase:
+            for start in range(0, len(chunks), batch):
+                await _set_status(repo_id, "indexing",
+                                  progress={"phase": "embedding", "done": start, "total": len(chunks)})
+                part = chunks[start:start + batch]
+                vectors, hits = await _embed_with_cache(embedder, part)
+                cache_hits += hits
+                await _write_chunks(repo_id, part, vectors)
+            phase.set_attributes({"codedoc.chunks": len(chunks), "codedoc.embedding_cache_hits": cache_hits,
+                                  "gen_ai.request.model": embedder.model})
 
         graph_stats = None
         if graph_task is not None:
             if not graph_task.done():
                 await _set_status(repo_id, "indexing", progress={"phase": "graph"})
             graph_stats = await graph_task
+            if graph_stats.get("seconds") is not None:
+                timings["graph"] = graph_stats["seconds"]
 
         stats = {
             "files": len(files),
@@ -226,12 +261,16 @@ async def index_repo(repo_id: int, settings: Settings | None = None, embedder: E
             "chunking": chunking,
             "embedding_cache_hits": cache_hits,
             "graph": graph_stats,
+            "timings": timings,
             "seconds": round(time.monotonic() - started, 1),
         }
         await _set_status(repo_id, "ready", progress={"phase": "done"}, stats=stats, commit_sha=commit_sha)
+        log.info("index.finished", extra={"repo_id": repo_id, "repo": repo["name"], "files": stats["files"],
+                                          "chunks": stats["chunks"], "embedding_cache_hits": cache_hits,
+                                          "seconds": stats["seconds"], "timings": timings})
         return stats
     except Exception as exc:
-        log.exception("indexing repo %s failed", repo_id)
+        log.exception("indexing repo %s failed", repo_id, extra={"repo_id": repo_id})
         if graph_task is not None and not graph_task.done():
             graph_task.cancel()
         if repo["stats"] and not replaced_index:

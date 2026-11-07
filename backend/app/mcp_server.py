@@ -13,6 +13,7 @@ sees. `ask_codebase` runs the whole agent and returns its cited answer.
 import asyncio
 import logging
 import os
+import time
 from typing import Annotated
 
 import anthropic
@@ -26,6 +27,9 @@ from app.agent.tools import TOOLS, ToolContext, run_tool
 from app.config import get_settings
 from app.db import connection
 from app.ingest.pipeline import index_repo
+from app.observability.answers import observe_answer
+from app.observability.logs import configure_logging
+from app.observability.tracing import setup_tracing
 from app.repos import RepoError, create_repo, list_repos, resolve_repo
 from app.retrieval.embeddings import get_embedder, get_reranker
 
@@ -73,7 +77,10 @@ def _header(row: dict) -> str:
 
 async def _run(tool: str, repo: str | int | None, /, **args: object) -> str:
     ctx = await _tool_context(repo)
+    started = time.perf_counter()
     output = await run_tool(ctx, tool, {k: v for k, v in args.items() if v is not None})
+    log.info("mcp.tool", extra={"tool": tool, "repo_id": ctx.repo_id, "is_error": output.is_error,
+                                "ms": round((time.perf_counter() - started) * 1000)})
     if output.is_error:
         raise ToolError(output.text)
     return _header(ctx.repo) + output.clipped()
@@ -269,8 +276,11 @@ async def ask_codebase(
     streamed: list[str] = []
     errors: list[str] = []
     steps = 0
+    settings = get_settings()
+    events = observe_answer(answer_question(question, row, mode="agent", settings=settings), source="mcp", repo=row,
+                            question=question, mode="agent", settings=settings)
     try:
-        async for event in answer_question(question, row, mode="agent"):
+        async for event in events:
             kind = event["type"]
             if kind == "tool_result":
                 steps += 1
@@ -296,7 +306,8 @@ async def ask_codebase(
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.WARNING)  # stderr: stdout belongs to the MCP protocol
+    configure_logging(get_settings())  # stderr only: stdout belongs to the MCP protocol
+    setup_tracing("codedoc-mcp")  # no-op unless OTEL_EXPORTER_OTLP_ENDPOINT is set
     server.run("stdio")
 
 

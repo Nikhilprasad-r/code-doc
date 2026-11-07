@@ -147,6 +147,38 @@ CREATE TABLE IF NOT EXISTS graph_communities (
     PRIMARY KEY (repo_id, community)
 );
 
+-- The answer log (app/observability/answers.py): one row per answer from the web chat or MCP.
+CREATE TABLE IF NOT EXISTS answer_runs (
+    id                 BIGSERIAL PRIMARY KEY,
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    source             TEXT NOT NULL,              -- web | mcp
+    repo_id            INT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+    conversation_id    UUID,
+    mode               TEXT NOT NULL,              -- agent | rag
+    question           TEXT,                       -- NULL when RECORD_ANSWER_TEXT=false
+    answer             TEXT,
+    requested_model    TEXT NOT NULL,
+    models             TEXT[] NOT NULL DEFAULT '{{}}',  -- as served, one per Claude call
+    status             TEXT NOT NULL,              -- ok | error | refused | cut_off | cancelled
+    stop_reason        TEXT,
+    error              TEXT,
+    latency_ms         INT,
+    ttft_ms            INT,                        -- time to the first words of the answer
+    steps              INT NOT NULL DEFAULT 0,     -- Claude calls
+    tool_calls         INT NOT NULL DEFAULT 0,
+    tool_errors        INT NOT NULL DEFAULT 0,
+    input_tokens       INT NOT NULL DEFAULT 0,
+    output_tokens      INT NOT NULL DEFAULT 0,
+    cache_read_tokens  INT NOT NULL DEFAULT 0,
+    cache_write_tokens INT NOT NULL DEFAULT 0,
+    cost_usd           DOUBLE PRECISION,
+    tools              JSONB NOT NULL DEFAULT '[]',  -- one object per tool call: name, input, ms, is_error, sources, summary
+    step_log           JSONB NOT NULL DEFAULT '[]',  -- one object per Claude call (or retrieval): ms, ttft_ms, usage, ...
+    trace_id           TEXT
+);
+CREATE INDEX IF NOT EXISTS answer_runs_created_idx ON answer_runs (created_at);
+CREATE INDEX IF NOT EXISTS answer_runs_repo_idx ON answer_runs (repo_id, created_at);
+
 CREATE TABLE IF NOT EXISTS conversations (
     id         UUID PRIMARY KEY,
     repo_id    INT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,

@@ -2,9 +2,11 @@
 
 import { useEffect, useState } from "react";
 
+import { Table } from "@/components/Table";
+import { UsagePanel } from "@/components/UsagePanel";
 import { api, type DependencyRow, type EndpointRow, type Repo, type Source } from "@/lib/api";
 
-type Tab = "overview" | "endpoints" | "dependencies";
+type Tab = "overview" | "endpoints" | "dependencies" | "usage";
 
 export function RepoDetails({ repo, onOpenSource }: { repo: Repo; onOpenSource: (s: Source) => void }) {
   const [tab, setTab] = useState<Tab>("overview");
@@ -32,7 +34,7 @@ export function RepoDetails({ repo, onOpenSource }: { repo: Repo; onOpenSource: 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex gap-1 border-b border-border px-2 pt-2">
-        {(["overview", "endpoints", "dependencies"] as Tab[]).map((t) => (
+        {(["overview", "endpoints", "dependencies", "usage"] as Tab[]).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -49,6 +51,7 @@ export function RepoDetails({ repo, onOpenSource }: { repo: Repo; onOpenSource: 
 
       <div className="min-h-0 flex-1 overflow-auto p-4 text-sm">
         {tab === "overview" && <Overview repo={repo} />}
+        {tab === "usage" && <UsagePanel repoId={repo.id} />}
 
         {tab === "endpoints" && (
           <>
@@ -98,6 +101,13 @@ export function RepoDetails({ repo, onOpenSource }: { repo: Repo; onOpenSource: 
   );
 }
 
+function timingsSummary(timings: Repo["stats"]["timings"]): string | undefined {
+  if (!timings || Object.keys(timings).length === 0) return undefined;
+  return Object.entries(timings)
+    .map(([phase, seconds]) => `${phase} ${seconds}s`)
+    .join(" · ");
+}
+
 function graphSummary(graph: Repo["stats"]["graph"]): string | undefined {
   if (!graph) return undefined;
   if (graph.error) return "Not available";
@@ -119,6 +129,7 @@ function Overview({ repo }: { repo: Repo }) {
     ["Embedding model", s.embed_model],
     ["Indexed in", s.seconds !== undefined ? `${s.seconds}s` : undefined],
     ["Code graph", graphSummary(s.graph)],
+    ["Index phases", timingsSummary(s.timings)],
   ];
   return (
     <div className="space-y-5">
@@ -159,35 +170,5 @@ function SourceLink({ path, line, onOpen }: { path: string; line: number; onOpen
     >
       {short}:{line}
     </button>
-  );
-}
-
-function Table({ head, rows, empty }: { head: string[]; rows: React.ReactNode[][]; empty: string }) {
-  if (rows.length === 0) return <p className="text-muted">{empty}</p>;
-  return (
-    <div className="overflow-x-auto">
-      <table className="w-full border-collapse">
-        <thead>
-          <tr>
-            {head.map((h) => (
-              <th key={h} className="border-b border-border pr-3 pb-1.5 text-left text-xs font-medium text-muted">
-                {h}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((cells, i) => (
-            <tr key={i} className="border-b border-border/60 align-top">
-              {cells.map((cell, j) => (
-                <td key={j} className="py-1.5 pr-3">
-                  {cell}
-                </td>
-              ))}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
   );
 }

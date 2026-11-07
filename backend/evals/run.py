@@ -35,6 +35,7 @@ from app.agent.loop import make_client
 from app.config import Settings, get_settings
 from app.db import close_db, connection, init_db
 from app.ingest.pipeline import index_repo
+from app.pricing import PRICES, cost_usd
 from app.retrieval.embeddings import get_embedder
 from evals.designs import DESIGNS, Design, Outcome, run_design
 from evals.grading import GraderError, citation_scores, found_gold, grade_items, judge_facts
@@ -48,7 +49,8 @@ DEFAULT_JUDGE = "claude-sonnet-5-5"
 
 # Files whose change means "a different eval": the gate refuses to run until a person re-approves.
 HARNESS_PATHS = ["backend/evals/run.py", "backend/evals/grading.py", "backend/evals/designs.py",
-                 "backend/evals/cases.jsonl", "backend/evals/repos.json", "backend/uv.lock"]
+                 "backend/evals/cases.jsonl", "backend/evals/repos.json", "backend/uv.lock",
+                 "backend/app/pricing.py"]
 
 METRICS = [
     {"id": "correct", "label": "Correct", "kind": "float", "scale": 1},
@@ -58,19 +60,6 @@ METRICS = [
 ]
 PERF_FIELDS = [{"id": "latency_s", "label": "Latency", "unit": "s"}, {"id": "tool_calls", "label": "Tool calls"},
                {"id": "cost_usd", "label": "Cost", "unit": "$"}]
-
-# First-party $/MTok: (input, output, 5-minute cache write, cache read). The agent's cache_control uses
-# the default 5-minute TTL. The cache-read rate is not a fixed share of input (0.05x for Opus 5.5 and
-# Sonnet 5.5, 0.025x for Fable 5.1, 0.1x for the others), so each one is listed. Haiku 5.5 is priced at
-# its tier for prompts up to 100k tokens; prompts above that cost 5x.
-PRICES = {
-    "claude-fable-5-1": (10.0, 50.0, 12.50, 0.25),
-    "claude-opus-5-5": (4.0, 20.0, 5.00, 0.20),
-    "claude-sonnet-5-5": (2.0, 10.0, 2.50, 0.10),
-    "claude-haiku-5-5": (0.10, 0.50, 0.125, 0.01),
-    "claude-opus-5": (5.0, 25.0, 6.25, 0.50),
-    "claude-sonnet-5": (2.0, 10.0, 2.50, 0.20),
-}
 
 RETRYABLE = (anthropic.RateLimitError, anthropic.InternalServerError, anthropic.APIConnectionError)
 
@@ -84,16 +73,6 @@ def load_cases(ids: str | None = None) -> list[dict]:
             sys.exit(f"unknown case ids: {', '.join(sorted(unknown))}")
         cases = [c for c in cases if c["id"] in wanted]
     return cases
-
-
-def cost_usd(model: str | None, usage: dict) -> float | None:
-    if not model or model not in PRICES or not usage:
-        return None
-    price_in, price_out, price_cache_write, price_cache_read = PRICES[model]
-    return (usage.get("input_tokens", 0) * price_in
-            + usage.get("cache_read_input_tokens", 0) * price_cache_read
-            + usage.get("cache_creation_input_tokens", 0) * price_cache_write
-            + usage.get("output_tokens", 0) * price_out) / 1_000_000
 
 
 # --- harness gate ------------------------------------------------------------------------------

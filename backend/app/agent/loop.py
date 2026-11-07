@@ -3,22 +3,29 @@
 `run_agent` yields UI events:
   {"type": "text", "delta": str}                      answer text as it streams
   {"type": "tool_start", "name": str}                 Claude started a tool call
-  {"type": "tool_result", "name", "input", "summary", "sources", "is_error"}
+  {"type": "tool_result", "name", "input", "summary", "sources", "is_error", "ms"}
   {"type": "notice", "message": str}                  non-fatal conditions
   {"type": "error", "message": str}                   the turn ended without an answer
   {"type": "done", "usage": {...}, "stop_reason", "model", "models", "tool_calls"}
-plus one internal {"type": "_messages", "messages": [...]} event with the full history to persist.
+and internal events (type starting with "_"), which callers must not forward to clients:
+  {"type": "_step", "n", "model", "usage", "stop_reason", "ms", "ttft_ms"}   after each Claude call
+  {"type": "_messages", "messages": [...]}            the full history to persist
+
+Each Claude call runs in a `chat <model>` span with GenAI token attributes (app/observability/tracing.py).
 """
 
 import asyncio
+import time
 from collections import Counter
 from collections.abc import AsyncIterator
 from typing import Any, Protocol
 
 import anthropic
+from opentelemetry.trace import Span
 
 from app.agent.tools import TOOLS, ToolContext, ToolOutput, run_tool
 from app.config import Settings
+from app.observability.tracing import tracer
 
 # Models that accept server-side refusal fallbacks (`fallbacks: "default"`).
 FALLBACK_MODELS = {"claude-fable-5-1", "claude-fable-5", "claude-opus-5-5", "claude-opus-5", "claude-sonnet-5-5"}
@@ -103,6 +110,46 @@ def _summary(output: ToolOutput) -> str:
     return first[:160]
 
 
+def elapsed_ms(started: float, until: float | None = None) -> int:
+    return round(((until if until is not None else time.perf_counter()) - started) * 1000)
+
+
+def requested_model(model: Model) -> str | None:
+    settings = getattr(model, "settings", None)
+    return getattr(settings, "agent_model", None)
+
+
+def start_chat_span(model: Model):
+    name = requested_model(model)
+    return tracer.start_as_current_span(f"chat {name}" if name else "chat", attributes={
+        "gen_ai.operation.name": "chat", "gen_ai.system": "anthropic", **({"gen_ai.request.model": name} if name else {})})
+
+
+def finish_chat_span(span: Span, response: Any, usage: Counter, ttft_ms: int | None) -> None:
+    attributes = {
+        "gen_ai.usage.input_tokens": usage["input_tokens"] + usage["cache_read_input_tokens"]
+        + usage["cache_creation_input_tokens"],
+        "gen_ai.usage.output_tokens": usage["output_tokens"],
+        "gen_ai.usage.cache_read.input_tokens": usage["cache_read_input_tokens"],
+        "gen_ai.usage.cache_creation.input_tokens": usage["cache_creation_input_tokens"],
+        "gen_ai.response.finish_reasons": [response.stop_reason or ""],
+    }
+    if getattr(response, "model", None):
+        attributes["gen_ai.response.model"] = response.model
+    if ttft_ms is not None:
+        attributes["codedoc.ttft_ms"] = ttft_ms
+    span.set_attributes(attributes)
+
+
+async def _timed_tool(ctx: ToolContext, block: dict) -> tuple[ToolOutput | Exception, int]:
+    started = time.perf_counter()
+    try:
+        output: ToolOutput | Exception = await run_tool(ctx, block["name"], block.get("input"))
+    except Exception as exc:
+        output = exc
+    return output, elapsed_ms(started)
+
+
 async def run_agent(question: str, history: list[dict], ctx: ToolContext, model: Model,
                     max_steps: int) -> AsyncIterator[dict]:
     messages: list[dict] = [*history, {"role": "user", "content": question}]
@@ -118,16 +165,27 @@ async def run_agent(question: str, history: list[dict], ctx: ToolContext, model:
                 "model": served_models[-1] if served_models else None, "models": served_models}
 
     tool_calls = 0
+    calls = 0
     while True:
         response = None
+        started = time.perf_counter()
+        first_output: float | None = None
+        step_usage: Counter = Counter()
         try:
-            async for kind, payload in model.stream(messages, allow_tools=allow_tools):
-                if kind == "text":
-                    yield {"type": "text", "delta": payload}
-                elif kind == "tool_start":
-                    yield {"type": "tool_start", "name": payload}
-                elif kind == "final":
-                    response = payload
+            with start_chat_span(model) as span:
+                async for kind, payload in model.stream(messages, allow_tools=allow_tools):
+                    if kind in ("text", "tool_start") and first_output is None:
+                        first_output = time.perf_counter()
+                    if kind == "text":
+                        yield {"type": "text", "delta": payload}
+                    elif kind == "tool_start":
+                        yield {"type": "tool_start", "name": payload}
+                    elif kind == "final":
+                        response = payload
+                if response is not None:
+                    _add_usage(step_usage, response.usage)
+                    finish_chat_span(span, response, step_usage,
+                                     elapsed_ms(started, first_output) if first_output else None)
         except ValueError:
             # The SDK could not parse a streamed tool input at all; re-issue the turn (bounded).
             json_retries += 1
@@ -143,6 +201,10 @@ async def run_agent(question: str, history: list[dict], ctx: ToolContext, model:
         _add_usage(usage, response.usage)
         if getattr(response, "model", None):
             served_models.append(response.model)
+        calls += 1
+        yield {"type": "_step", "n": calls, "model": getattr(response, "model", None), "usage": dict(step_usage),
+               "stop_reason": response.stop_reason, "ms": elapsed_ms(started),
+               "ttft_ms": elapsed_ms(started, first_output) if first_output else None}
 
         if response.stop_reason == "refusal":
             details = getattr(response, "stop_details", None)
@@ -167,14 +229,13 @@ async def run_agent(question: str, history: list[dict], ctx: ToolContext, model:
             return
 
         tool_calls += len(tool_uses)
-        outputs = await asyncio.gather(*(run_tool(ctx, b["name"], b.get("input")) for b in tool_uses),
-                                       return_exceptions=True)
+        outputs = await asyncio.gather(*(_timed_tool(ctx, b) for b in tool_uses))
         results: list[dict] = []
-        for block, output in zip(tool_uses, outputs):
-            if isinstance(output, BaseException):
+        for block, (output, ms) in zip(tool_uses, outputs):
+            if isinstance(output, Exception):
                 output = ToolOutput(f"Tool {block['name']} failed: {output}", is_error=True)
             yield {"type": "tool_result", "id": block["id"], "name": block["name"], "input": block.get("input"),
-                   "summary": _summary(output), "sources": output.sources, "is_error": output.is_error}
+                   "summary": _summary(output), "sources": output.sources, "is_error": output.is_error, "ms": ms}
             result = {"type": "tool_result", "tool_use_id": block["id"], "content": output.clipped()}
             if output.is_error:
                 result["is_error"] = True
