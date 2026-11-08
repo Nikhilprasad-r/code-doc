@@ -1,12 +1,18 @@
+import os
 from pathlib import Path
 
-import psycopg
-import pytest
+# Tests never call an embeddings or reranking service, whatever .env says; the ones that need an
+# embedder use a fake. Set before any app module reads its settings.
+os.environ["LOCAL_EMBED_URL"] = ""
+os.environ["VOYAGE_API_KEY"] = ""
 
-from app.config import Settings, get_settings
-from app.db import close_db, connection, init_db
-from app.ingest.pipeline import FileAnalysis, analyze_tree, index_repo
-from app.retrieval.embeddings import HashEmbedder
+import psycopg  # noqa: E402
+import pytest  # noqa: E402
+
+from app.config import Settings, get_settings  # noqa: E402
+from app.db import close_db, connection, init_db  # noqa: E402
+from app.ingest.pipeline import FileAnalysis, analyze_tree, index_repo  # noqa: E402
+from app.retrieval.embeddings import HashEmbedder  # noqa: E402
 
 FIXTURE_REPO = Path(__file__).parent / "fixtures" / "sample_repo"
 

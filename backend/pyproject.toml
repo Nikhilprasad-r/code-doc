@@ -10,6 +10,7 @@ dependencies = [
     # Code graph (app/ingest/graph.py). Exact pin: graph.json is our contract with it and it releases often;
     # bump deliberately, to a release at least two weeks old, and re-run tests/test_graph.py.
     "graphifyy==0.9.95",
+    "httpx>=0.28.1",
     "mcp>=2.3.0",
     "numpy>=2.5.4",
     "opentelemetry-api==1.45.1",
@@ -33,7 +34,6 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-    "httpx>=0.28.1",
     "pytest>=9.2.0",
     "pytest-asyncio>=1.4.1.post1",
 ]

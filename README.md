@@ -43,7 +43,7 @@ Demo video: _to be added._
 
 ## Quick setup
 
-You need Docker with Compose. Answers need an Anthropic API key. A Voyage key is optional.
+You need Docker with Compose. Answers need an Anthropic API key. A Voyage key is optional, and a Mac can embed locally instead.
 
 ```bash
 git clone https://github.com/Nikhilprasad-r/code-doc.git
@@ -64,8 +64,12 @@ Open <http://localhost:3000>, paste `https://github.com/spring-projects/spring-p
 
 - **Model:** `AGENT_MODEL` picks the Claude model. `.env.example` sets `claude-haiku-5-5`, which
   the screenshots use; left unset, it defaults to `claude-opus-5-5`.
-- **Without `VOYAGE_API_KEY`:** an offline embedder is used. Keyword search, the structured tables
-  and the graph still work; semantic search and reranking don't.
+- **Semantic search without a Voyage key, on an Apple Silicon Mac:** run
+  `uv run scripts/mlx_embed_server.py` (Qwen3-Embedding-0.6B with MLX; the first run downloads about
+  1.2 GB) and set `LOCAL_EMBED_URL=http://host.docker.internal:8090` in `.env`. MLX can't run inside
+  Docker, so the containers call this server on the Mac. Reranking still needs Voyage.
+- **With neither:** an offline embedder is used. Keyword search, the structured tables and the graph
+  still work; semantic search and reranking don't.
 - **Tracing:** add Jaeger with
   `docker compose -f docker-compose.yml -f docker-compose.observability.yml up -d`, then open
   <http://localhost:16686>.

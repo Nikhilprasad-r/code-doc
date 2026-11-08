@@ -13,6 +13,7 @@
 | Same tools over MCP | Coding agents (Claude Code, Cursor) can use the index, and the tools get a second set of callers. | One more endpoint to secure. |
 | Observability built in (answer log, JSON logs, OpenTelemetry) | Cost and latency per answer are product questions, not just ops ones. | More code in the request path; tracing is off unless configured. |
 | Haiku for the demo, model configurable | Haiku is 40× cheaper per token than Opus, which keeps exploring and recording the demo cheap. | Weaker multi-step reasoning and citation discipline; the eval quantifies this. |
+| Local embeddings on a Mac (Qwen3-Embedding-0.6B with MLX) | Semantic search without a second key or per-token cost. MLX can't use the GPU from inside Docker, so it runs as a server on the Mac. | Apple Silicon only; a general-purpose model; no reranker. Voyage stays the production choice. |
 | Offline embedding fallback | The stack and tests run without keys. | Not semantic; development only. |
 
 ---

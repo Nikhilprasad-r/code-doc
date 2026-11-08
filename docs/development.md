@@ -37,7 +37,8 @@ backend/app/
   pricing.py   $/MTok per model (answers and evals)
   main.py      HTTP API (+ MCP at /mcp)   mcp_server.py  MCP server   worker.py  arq worker
 backend/tests/ unit + integration tests, multi-framework fixture repo
-frontend/      Next.js UI (repo list, chat, code viewer, endpoints/dependencies/usage tabs)
+frontend/      Next.js UI (repo list, chat, code viewer, endpoints/dependencies/graph/usage tabs)
+scripts/       mlx_embed_server.py: local embeddings on an Apple Silicon Mac (runs outside Docker)
 ```
 
 ## Configuration
@@ -53,6 +54,8 @@ Set in `.env` (see `.env.example`):
 | `EMBED_MODEL` / `EMBED_DIM` | `voyage-code-3` / `1024` | Changing the dimension needs a fresh database |
 | `RERANK_MODEL` | `rerank-2.5` | |
 | `QUERY_CACHE_SIZE` | `2048` | Search queries whose Voyage embedding is kept in memory per process; `0` turns it off |
+| `LOCAL_EMBED_URL` | – | An OpenAI-style embeddings server, used instead of Voyage for embeddings, e.g. `http://host.docker.internal:8090` for `scripts/mlx_embed_server.py` on a Mac |
+| `LOCAL_EMBED_MODEL` | `Qwen/Qwen3-Embedding-0.6B` | The model that server must be serving; recorded with each index |
 | `ALLOW_LOCAL_PATHS` | `true` | Set `false` on any shared deployment |
 | `READ_ONLY` | `false` | Public demo mode: no adding, re-indexing or deleting repositories |
 | `GRAPH_ENABLED` | `true` | Build the code graph while indexing |

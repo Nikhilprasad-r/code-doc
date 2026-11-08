@@ -74,13 +74,19 @@ export function Workspace() {
             <span>
               Agent: <span className="font-mono">{health.agent_model}</span>
             </span>
-            {health.offline_embeddings && (
+            {health.offline_embeddings ? (
               <span
                 className="rounded-full border border-border px-2 py-0.5"
-                title="VOYAGE_API_KEY is not set: vector search uses a hashing embedder"
+                title="Neither VOYAGE_API_KEY nor LOCAL_EMBED_URL is set: vector search uses a hashing embedder"
               >
                 offline embeddings
               </span>
+            ) : (
+              health.embed_model && (
+                <span>
+                  Embeddings: <span className="font-mono">{health.embed_model.split("/").pop()}</span>
+                </span>
+              )
             )}
           </div>
         )}

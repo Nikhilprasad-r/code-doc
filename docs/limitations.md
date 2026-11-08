@@ -17,6 +17,9 @@
   a public demo.
 - **Version pins:** `tree-sitter` is pinned below 0.26 (0.26.0 segfaults on linux/aarch64), and
   graphify to exactly 0.9.95.
+- **Local embeddings need an Apple Silicon Mac,** and the server must be running before indexing
+  or searching. A repository indexed with one embedding model gets no vector search under another
+  until it is re-indexed.
 - **Port:** the database is published on port 5433, to avoid clashing with a local Postgres.
 
 ---

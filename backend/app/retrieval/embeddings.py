@@ -1,8 +1,10 @@
 """Embedding and reranking providers.
 
-Voyage's code models are used when VOYAGE_API_KEY is set. Without a key, a deterministic hashing
-embedder keeps the whole pipeline runnable offline (tests, first run); its vectors only capture
-shared identifiers, so semantic recall comes from Voyage.
+- LOCAL_EMBED_URL set: a local OpenAI-style embeddings server, such as Qwen3-Embedding on a Mac with
+  MLX (scripts/mlx_embed_server.py). No key and no per-token cost.
+- VOYAGE_API_KEY set: Voyage's code embedding model, and its reranker (used with either embedder).
+- Neither: a deterministic hashing embedder keeps the whole pipeline runnable offline (tests, first
+  run). Its vectors only capture shared identifiers, so it gives no semantic recall.
 """
 
 import hashlib
@@ -11,6 +13,7 @@ from collections import Counter, OrderedDict
 from functools import lru_cache
 from typing import Protocol
 
+import httpx
 import numpy as np
 import voyageai
 from opentelemetry import trace
@@ -90,6 +93,49 @@ class VoyageEmbedder:
         return vector
 
 
+class LocalEmbedder:
+    """A local server speaking the OpenAI embeddings API (POST /v1/embeddings).
+
+    Qwen3-Embedding is instruction-aware: a query gets a one-line task description, and documents go
+    in as they are. Longer vectors are cut to `dim` and re-normalised, which Matryoshka-trained models
+    such as Qwen3-Embedding support. The server must be serving `model`, so vectors from two models
+    never mix in one index."""
+
+    QUERY_INSTRUCTION = ("Instruct: Given a question about a codebase, retrieve the code or documentation "
+                         "that answers it\nQuery: ")
+
+    def __init__(self, base_url: str, model: str, dim: int, timeout_s: float = 600,
+                 transport: httpx.AsyncBaseTransport | None = None):
+        self.base_url = base_url.rstrip("/")
+        self.model = model
+        self.dim = dim
+        self.timeout_s = timeout_s
+        self.transport = transport  # tests pass a fake server
+
+    async def _embed(self, texts: list[str]) -> list[list[float]]:
+        async with httpx.AsyncClient(base_url=self.base_url, timeout=self.timeout_s, transport=self.transport) as client:
+            response = await client.post("/v1/embeddings", json={"model": self.model, "input": texts})
+        response.raise_for_status()
+        body = response.json()
+        if body.get("model") not in (None, self.model):
+            raise RuntimeError(f"The embeddings server at {self.base_url} serves {body['model']}, "
+                               f"not {self.model} (LOCAL_EMBED_MODEL)")
+        rows = sorted(body["data"], key=lambda row: row["index"])
+        vectors = np.asarray([row["embedding"] for row in rows], dtype=np.float32)
+        if vectors.shape != (len(texts), vectors.shape[1]) or vectors.shape[1] < self.dim:
+            raise RuntimeError(f"Expected {len(texts)} vectors of at least {self.dim} dimensions, "
+                               f"got shape {vectors.shape}")
+        vectors = vectors[:, : self.dim]
+        vectors /= np.maximum(np.linalg.norm(vectors, axis=1, keepdims=True), 1e-12)
+        return vectors.tolist()
+
+    async def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return await self._embed(texts)
+
+    async def embed_query(self, text: str) -> list[float]:
+        return (await self._embed([self.QUERY_INSTRUCTION + text]))[0]
+
+
 class HashEmbedder:
     """Feature hashing over code-aware terms and term bigrams, L2-normalised."""
 
@@ -138,6 +184,8 @@ class NoopReranker:
 
 
 def get_embedder(settings: Settings) -> Embedder:
+    if settings.local_embed_url:  # computed on this machine in milliseconds; not cached
+        return LocalEmbedder(settings.local_embed_url, settings.local_embed_model, settings.embed_dim)
     if settings.voyage_api_key:
         cache = query_cache(settings.query_cache_size) if settings.query_cache_size > 0 else None
         return VoyageEmbedder(settings.voyage_api_key, settings.embed_model, settings.embed_dim, cache)

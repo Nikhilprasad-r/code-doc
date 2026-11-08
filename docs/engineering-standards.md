@@ -11,7 +11,9 @@
   and reproduced.
 - **Reproducible builds:**
   - Lockfiles for Python (`uv.lock`) and Node (`pnpm-lock.yaml`).
-  - Exact pins for graphify and OpenTelemetry, to releases at least two weeks old.
+  - Exact pins for graphify and OpenTelemetry, to releases at least two weeks old. The MLX embeddings
+    server pins `mlx-embeddings` exactly, locks its other packages in its own lockfile, and refuses
+    anything published in the last two weeks.
   - Re-tested after the graphify version changed.
 - **One-command Docker setup;** configuration through environment variables only; no secrets in the
   repository.

@@ -40,8 +40,18 @@ apart on very small and very large functions. The eval's baseline design uses 40
 |---|---|---|
 | Final | **Voyage `voyage-code-3`**, 1,024 dimensions, with separate `document` and `query` input types; **Voyage `rerank-2.5`** to rerank | Trained for code retrieval; one vendor for embedding and reranking; vectors cached by content hash, so re-indexing PetClinic unchanged re-embedded nothing (366 of 366 from cache) |
 | Weighed | General-purpose text embeddings | Not trained on code; identifiers and code structure retrieve worse |
-| Weighed | Open models hosted ourselves | No per-token cost or data leaving the network, but GPU hosting to run |
+| Weighed | Open models hosted ourselves | No per-token cost or data leaving the network, but GPU hosting to run in production. Used for local development instead (next row). |
+| Local option | **Qwen3-Embedding-0.6B** with MLX on an Apple Silicon Mac ([scripts/mlx_embed_server.py](../scripts/mlx_embed_server.py)), set with `LOCAL_EMBED_URL` | No second key and no per-token cost. Apache 2.0; its 1,024 dimensions fit the same column. Queries get a one-line task instruction, as the model expects. On an M1 Pro: about 2,000 tokens/s to index (PetClinic in about a minute) and 31 ms per query. General-purpose rather than code-trained, and there is no local reranker. |
 | Fallback | An offline hashing embedder (`hash-v1`) | Lets the stack and tests run without any key. It does not capture meaning, so it is for development only. |
+
+Docker on a Mac runs Linux in a virtual machine with no access to the GPU, so the MLX model runs as a
+small server on the Mac itself and the containers call it at `host.docker.internal`. On paraphrased
+questions it finds what keyword search misses. Asked "how does a user reset a forgotten password?",
+keyword search returned generated type files and vector search returned `backend/app/api/routes/login.py`.
+Asked "what happens when an error is triggered on purpose?", keyword search returned validator tests
+and vector search returned `CrashController.java`. Hybrid fusion doesn't always keep the right
+answer on top without a reranker: for "how are passwords stored securely?", vector search ranked
+`security.py` first, but the keyword list's noise pushed it out of the fused top 3.
 
 ## Vector database and retrieval
 
@@ -219,10 +229,11 @@ are listed under production work.
   from different eval versions never mix.
 - **Results:** `evals.run summarize` prints a table comparing the designs on these metrics.
 
-**Tests:** 80 backend tests: 79 pass, and one is skipped when an API key is set, because it checks
+**Tests:** 84 backend tests: 83 pass, and one is skipped when an API key is set, because it checks
 the missing-key error.
-- **Unit tests:** tokenizer, chunker, extractors, query cache, zip extraction, graders, graph conversion,
-  log format.
+- **Unit tests:** tokenizer, chunker, extractors, query cache, the local embeddings client, zip
+  extraction, graders, graph conversion, log format. No test calls an embeddings service, whatever
+  `.env` says.
 - **Integration tests** against a real Postgres and a fixture repository covering six web frameworks in
   four languages: indexing from a folder and from an uploaded zip, search modes, every tool, the agent
   loop with a scripted model, the MCP server, the answer log and stats endpoints, span nesting, and the

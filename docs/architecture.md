@@ -12,12 +12,13 @@ flowchart LR
     end
     Q[(Redis)]
     subgraph worker [worker - arq]
-        IX[Index job:<br/>fetch, parse, chunk, extract,<br/>embed via Voyage]
+        IX[Index job:<br/>fetch, parse, chunk, extract,<br/>embed via Voyage<br/>or a local model]
         GF[graphify<br/>subprocess]
     end
     PG[(Postgres + pgvector<br/>chunks + vectors, full text,<br/>symbols, endpoints, deps,<br/>code graph, answer log)]
     CL[Claude API]
     VO[Voyage API<br/>embed + rerank]
+    LE[Local embeddings, optional<br/>MLX server on the Mac]
     J[Jaeger, optional<br/>traces from api + worker]
 
     UI --> CH --> AG
@@ -28,6 +29,8 @@ flowchart LR
     AG <--> PG
     AG --> CL
     AG --> VO
+    IX -.-> LE
+    AG -.-> LE
     api -. traces .-> J
 ```
 

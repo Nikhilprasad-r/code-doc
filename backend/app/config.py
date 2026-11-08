@@ -26,6 +26,10 @@ class Settings(BaseSettings):
     rerank_model: str = "rerank-2.5"
     # Search queries embedded recently, kept in memory per process (about 4 KB each); 0 turns it off.
     query_cache_size: int = 2048
+    # Local embeddings instead of Voyage: any OpenAI-style /v1/embeddings server, such as
+    # scripts/mlx_embed_server.py running Qwen3-Embedding on a Mac. Reranking still needs Voyage.
+    local_embed_url: str | None = None
+    local_embed_model: str = "Qwen/Qwen3-Embedding-0.6B"
 
     # Indexing limits
     max_file_bytes: int = 1_000_000
@@ -54,7 +58,7 @@ class Settings(BaseSettings):
 
     @property
     def offline_embeddings(self) -> bool:
-        return not self.voyage_api_key
+        return not (self.voyage_api_key or self.local_embed_url)
 
 
 @lru_cache

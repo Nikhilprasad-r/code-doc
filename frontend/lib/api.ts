@@ -73,6 +73,8 @@ export interface Health {
   ok: boolean;
   offline_embeddings: boolean;
   agent_model: string;
+  /** e.g. voyage-code-3, Qwen/Qwen3-Embedding-0.6B (local), or hash-v1 (offline). */
+  embed_model?: string;
   read_only: boolean;
   tracing?: boolean;
 }

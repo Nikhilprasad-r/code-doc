@@ -107,6 +107,7 @@ async def _get_repo(repo_id: int) -> dict:
 @app.get("/health")
 async def health() -> dict:
     return {"ok": True, "offline_embeddings": settings.offline_embeddings, "agent_model": settings.agent_model,
+            "embed_model": get_embedder(settings).model,
             "read_only": settings.read_only, "tracing": tracing_enabled()}
 
 

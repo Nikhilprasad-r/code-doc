@@ -40,7 +40,7 @@ programmatically graded metric, which also confirms that all 84 gold locations r
 `evals.run judge-check` verifies that the judge gives 0 to an empty answer, "I don't know", and an
 off-topic answer, and full marks to the oracle answer.
 
-**Running it** (from `backend/`, with both API keys in `.env`). Each `run` uses `AGENT_MODEL` unless you pass `--model`, for example `--model claude-opus-5-5`; run the same design on two models with `--variant` to compare them side by side.
+**Running it** (from `backend/`, with `ANTHROPIC_API_KEY` and either `VOYAGE_API_KEY` or `LOCAL_EMBED_URL` in `.env`; without one, vector search means nothing). Each `run` uses `AGENT_MODEL` unless you pass `--model`, for example `--model claude-opus-5-5`; run the same design on two models with `--variant` to compare them side by side.
 
 ```bash
 uv run python -m evals.run prepare

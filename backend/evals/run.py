@@ -132,8 +132,9 @@ async def find_repo(name: str, chunking: str) -> dict | None:
 async def prepare(settings: Settings) -> None:
     embedder = get_embedder(settings)
     if settings.offline_embeddings:
-        print("WARNING: VOYAGE_API_KEY is not set, so indexes use the offline hashing embedder and vector "
-              "search results are not meaningful. Set it in .env before running the paid eval.\n")
+        print("WARNING: neither VOYAGE_API_KEY nor LOCAL_EMBED_URL is set, so indexes use the offline hashing "
+              "embedder and vector search results are not meaningful. Set one in .env before running the "
+              "paid eval.\n")
     pins = json.loads(REPOS_PATH.read_text())
     for name, pin in pins.items():
         for chunking in ("ast", "lines"):

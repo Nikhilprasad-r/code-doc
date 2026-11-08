@@ -31,6 +31,8 @@ services:
       DATA_DIR: /data
     ports:
       - "8000:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"  # a local embeddings server (LOCAL_EMBED_URL), on Linux too
     volumes:
       - repodata:/data
     depends_on:
@@ -49,6 +51,8 @@ services:
       DATABASE_URL: postgresql://codedoc:codedoc@db:5432/codedoc
       REDIS_URL: redis://redis:6379
       DATA_DIR: /data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - repodata:/data
     depends_on:
