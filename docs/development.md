@@ -47,11 +47,12 @@ Set in `.env` (see `.env.example`):
 | Variable | Default | Notes |
 |---|---|---|
 | `ANTHROPIC_API_KEY` | – | Required for chat |
-| `AGENT_MODEL` | `claude-opus-5-5` | `claude-sonnet-5-5` is cheaper and faster |
+| `AGENT_MODEL` | `claude-opus-5-5` | `.env.example` sets `claude-haiku-5-5`; `claude-sonnet-5-5` is in between |
 | `AGENT_EFFORT` | `medium` | `low` … `max` |
 | `VOYAGE_API_KEY` | – | Enables semantic embeddings and reranking |
 | `EMBED_MODEL` / `EMBED_DIM` | `voyage-code-3` / `1024` | Changing the dimension needs a fresh database |
 | `RERANK_MODEL` | `rerank-2.5` | |
+| `QUERY_CACHE_SIZE` | `2048` | Search queries whose Voyage embedding is kept in memory per process; `0` turns it off |
 | `ALLOW_LOCAL_PATHS` | `true` | Set `false` on any shared deployment |
 | `READ_ONLY` | `false` | Public demo mode: no adding, re-indexing or deleting repositories |
 | `GRAPH_ENABLED` | `true` | Build the code graph while indexing |

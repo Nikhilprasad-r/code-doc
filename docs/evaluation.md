@@ -1,8 +1,6 @@
 # Evaluation
 
-Status: the harness, questions and graders are built and checked (oracle 1.00, null 0), but the four designs have not been run yet. A run needs API spend and a person's `evals.run approve`.
-
-The eval measures whether the design choices above actually matter. It asks the same 40 questions of
+The eval measures whether the design choices in the [RAG and LLM approach](rag-and-llm.md) actually matter. It asks the same 40 questions of
 four designs and grades every answer.
 
 **Questions** ([backend/evals/CASES.md](../backend/evals/CASES.md)): 20 each about

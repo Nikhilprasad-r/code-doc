@@ -3,6 +3,7 @@
 
 from dataclasses import dataclass
 
+import httpx
 import pytest
 
 from app.agent import answer
@@ -13,6 +14,7 @@ from app.db import connection
 from app.ingest import graph as graph_module
 from app.ingest.graph import GraphError, bare_name, graph_rows
 from app.ingest.pipeline import index_repo
+from app.main import app
 from app.retrieval.embeddings import NoopReranker
 from tests.conftest import FIXTURE_REPO
 from tests.test_agent import ScriptedModel
@@ -144,6 +146,29 @@ async def test_graph_is_built_outside_the_repository(indexed_repo):
             [repo_id])).fetchone()
     assert (archive["path"], archive["start_line"], archive["end_line"]) == ("api/routes/items.py", 42, 45)
     assert data_nodes["n"] == 0
+
+
+@pytest.mark.integration
+async def test_graph_view_is_served_sandboxed(indexed_repo):
+    """graphify's graph.html carries text from the repository, so it must never run with the API's origin."""
+    repo_id, _, _ = indexed_repo
+    async with connection() as conn:
+        bare = await (await conn.execute(
+            "INSERT INTO repos (name, source) VALUES ('no-graph', '/nowhere') RETURNING id")).fetchone()
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            page = await client.get(f"/repos/{repo_id}/graph.html")
+            assert page.status_code == 200 and page.headers["content-type"].startswith("text/html")
+            assert "vis-network" in page.text
+            policy = page.headers["content-security-policy"]
+            assert policy.startswith("sandbox allow-scripts;") and "allow-same-origin" not in policy
+            assert "default-src 'none'" in policy
+            assert f"frame-ancestors {' '.join(get_settings().cors_origins)}" in policy
+            assert (await client.get(f"/repos/{bare['id']}/graph.html")).status_code == 404
+            assert (await client.get("/repos/999999999/graph.html")).status_code == 404
+    finally:
+        async with connection() as conn:
+            await conn.execute("DELETE FROM repos WHERE id = %s", [bare["id"]])
 
 
 @pytest.mark.integration

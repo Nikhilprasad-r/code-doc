@@ -114,6 +114,11 @@ class CodeGraph:
 
 # --- running graphify -------------------------------------------------------------------------------
 
+def graph_dir(settings: Settings, repo_id: int) -> Path:
+    """graphify's output for one repository: graph.json, plus graph.html, its interactive view."""
+    return settings.data_dir / "graphs" / str(repo_id)
+
+
 async def run_graphify(root: Path, out_dir: Path, timeout_s: float) -> dict:
     """Build the graph for `root` and return graph.json. Keeps graphify's per-file cache between runs
     but nothing else, so every run is a full rebuild."""
@@ -330,7 +335,7 @@ async def build_code_graph(repo_id: int, root: Path, files: list, settings: Sett
 
 async def _build_code_graph(repo_id: int, root: Path, files: list, settings: Settings, started: float) -> dict:
     try:
-        data = await run_graphify(root, settings.data_dir / "graphs" / str(repo_id), settings.graph_timeout_s)
+        data = await run_graphify(root, graph_dir(settings, repo_id), settings.graph_timeout_s)
         graph = await asyncio.to_thread(
             graph_rows,
             data,

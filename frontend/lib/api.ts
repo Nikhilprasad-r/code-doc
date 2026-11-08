@@ -195,6 +195,9 @@ export const api = {
     }
     return pending;
   },
+  /** graphify's interactive graph page. The commit in the query reloads it after a re-index. */
+  graphUrl: (id: number, commit?: string | null) =>
+    `${API_URL}/repos/${id}/graph.html${commit ? `?commit=${encodeURIComponent(commit)}` : ""}`,
   endpoints: (id: number) => request<EndpointRow[]>(`/repos/${id}/endpoints`),
   dependencies: (id: number) => request<DependencyRow[]>(`/repos/${id}/dependencies`),
   stats: (repoId: number, days = 7) => request<AnswerStats>(`/stats?repo_id=${repoId}&days=${days}`),

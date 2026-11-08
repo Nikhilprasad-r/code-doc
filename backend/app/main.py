@@ -13,7 +13,7 @@ from arq import ArqRedis, create_pool
 from arq.connections import RedisSettings
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import BaseModel, Field
 
@@ -21,6 +21,7 @@ from app import repos
 from app.agent.answer import answer_question
 from app.config import get_settings
 from app.db import close_db, connection, init_db
+from app.ingest.graph import graph_dir
 from app.ingest.pipeline import UPLOAD_PREFIX, index_repo
 from app.ingest.source import repo_name
 from app.mcp_server import server as mcp_server
@@ -210,6 +211,30 @@ async def get_dependencies(repo_id: int) -> list[dict]:
         return await (await conn.execute(
             "SELECT ecosystem, name, version_spec, scope, manifest_path FROM dependencies WHERE repo_id = %s "
             "ORDER BY manifest_path, name", [repo_id])).fetchall()
+
+
+# graphify's page is third-party HTML carrying text from the indexed repository. The sandbox gives it an
+# opaque origin, so its scripts can't call this API even when the page is opened on its own; it may load
+# only its own inline code and vis-network from unpkg, and only the web UI may frame it.
+GRAPH_VIEW_CSP = "; ".join([
+    "sandbox allow-scripts",
+    "default-src 'none'",
+    "script-src 'unsafe-inline' https://unpkg.com",
+    "style-src 'unsafe-inline'",
+    "img-src data:",
+    "frame-ancestors " + " ".join(settings.cors_origins),
+])
+
+
+@app.get("/repos/{repo_id}/graph.html", response_class=FileResponse)
+async def graph_view(repo_id: int) -> FileResponse:
+    """graphify's interactive view of the code graph, for the repo panel's Graph tab."""
+    await _get_repo(repo_id)
+    page = graph_dir(settings, repo_id) / "graph.html"
+    if not page.is_file():
+        raise HTTPException(404, "No code graph for this repository")
+    return FileResponse(page, media_type="text/html",
+                        headers={"Content-Security-Policy": GRAPH_VIEW_CSP, "X-Content-Type-Options": "nosniff"})
 
 
 class SearchRequest(BaseModel):
