@@ -195,6 +195,11 @@ the one piece the demo doesn't show.
   `getuserbyid get user by id`) and vector search each return 50 candidates.
 - Reciprocal Rank Fusion (k=60) merges the two lists.
 - Voyage `rerank-2.5` reorders the top candidates.
+- The query's embedding is cached in memory (the last 2,048 queries, about 8 MB), so a repeated
+  search skips the Voyage call. It pays off where the search text is the user's question: single-shot
+  RAG, the same question asked again, and evaluation repeats. The agent rewords its searches, so
+  inside one answer it rarely hits: none of the 6 searches in the answers recorded so far repeated.
+  Each process has its own cache; with several API replicas, moving it to Redis would let them share it.
 
 Embeddings blur exact identifiers; keyword search finds them but misses paraphrases. The trace above
 shows the cost: about 25 ms per search, not counting the network call to Voyage (the demo has no key).
@@ -337,9 +342,9 @@ are listed under production work.
 | agent | – | – | – | – | – | – |
 | agent-graph | – | – | – | – | – | – |
 
-**Tests:** 71 backend tests: 70 pass, and one is skipped when an API key is set, because it checks
+**Tests:** 76 backend tests: 75 pass, and one is skipped when an API key is set, because it checks
 the missing-key error.
-- **Unit tests:** tokenizer, chunker, extractors, graders, graph conversion, log format.
+- **Unit tests:** tokenizer, chunker, extractors, query cache, graders, graph conversion, log format.
 - **Integration tests** against a real Postgres and a fixture repository covering six web frameworks in four languages:
   indexing, search modes, every tool, the agent loop with a scripted model, the MCP server, the answer
   log and stats endpoints, and span nesting.

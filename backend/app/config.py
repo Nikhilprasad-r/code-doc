@@ -24,6 +24,8 @@ class Settings(BaseSettings):
     embed_model: str = "voyage-code-3"
     embed_dim: int = 1024
     rerank_model: str = "rerank-2.5"
+    # Search queries embedded recently, kept in memory per process (about 4 KB each); 0 turns it off.
+    query_cache_size: int = 2048
 
     # Indexing limits
     max_file_bytes: int = 1_000_000
